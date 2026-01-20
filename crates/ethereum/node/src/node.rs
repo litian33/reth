@@ -1,4 +1,16 @@
-//! Ethereum Node types config.
+//! Ethereum 节点类型与组件/附加功能（add-ons）配置。
+//!
+//! 这份文件主要做两件事：
+//! 1) 定义 `EthereumNode`：一个实现了 `NodeTypes` 的“节点类型标记”，用于告诉 `NodeBuilder`
+//!    “我要启动一套标准的以太坊节点组件（pool/network/consensus/evm/payload…）”。
+//!    注意：`EthereumNode` 本身是零字段类型，`EthereumNode::default()` 只是构造一个标记值，
+//!    真正的节点组件会在 builder 启动流程中被创建并装配。
+//! 2) 定义以太坊节点默认的 add-ons（尤其是 RPC/Engine API 相关的 `EthereumAddOns`），
+//!    以及交易池、网络、共识、payload 校验器等 builder 的默认实现。
+//!
+//! 从 `bin/reth/src/main.rs` 的视角看，关键链路是：
+//! `builder.node(EthereumNode::default()).launch...`
+//! 这里的 `EthereumNode` 就决定了后续组件组合与 add-ons 行为。
 
 pub use crate::{payload::EthereumPayloadBuilder, EthereumEngineValidator};
 use crate::{EthEngineTypes, EthEvmConfig};
@@ -66,6 +78,15 @@ pub struct EthereumNode;
 
 impl EthereumNode {
     /// Returns a [`ComponentsBuilder`] configured for a regular Ethereum node.
+    ///
+    /// 这是“标准以太坊节点”的组件组合预设：
+    /// - pool：交易池（`EthereumPoolBuilder`）
+    /// - executor/evm：EVM 配置与执行器（`EthereumExecutorBuilder`）
+    /// - payload：payload 构建服务（`BasicPayloadServiceBuilder<EthereumPayloadBuilder>`）
+    /// - network：P2P 网络（`EthereumNetworkBuilder`）
+    /// - consensus：共识实现（`EthereumConsensusBuilder`，这里是 EthBeaconConsensus）
+    ///
+    /// 这个函数返回的是一个 builder（纯配置），并不会真正启动节点。
     pub fn components<Node>() -> ComponentsBuilder<
         Node,
         EthereumPoolBuilder,
@@ -129,11 +150,18 @@ impl EthereumNode {
     ///     .build_provider_factory();
     /// ```
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
+        // ProviderFactoryBuilder 负责组装 provider（数据库、static files、rocksdb 等）相关组件。
+        // 这里返回默认 builder，具体参数由调用方（或 NodeBuilder）继续配置。
         ProviderFactoryBuilder::default()
     }
 }
 
 impl NodeTypes for EthereumNode {
+    // 这里把“以太坊节点”的类型族固定下来：
+    // - Primitives：以太坊原语类型（区块/交易/收据等）
+    // - ChainSpec：链配置/分叉规则
+    // - Storage：以太坊存储抽象
+    // - Payload：Engine API 相关 payload 类型（执行层与共识层交互所需）
     type Primitives = EthPrimitives;
     type ChainSpec = ChainSpec;
     type Storage = EthStorage;
@@ -141,6 +169,9 @@ impl NodeTypes for EthereumNode {
 }
 
 /// Builds [`EthApi`](reth_rpc::EthApi) for Ethereum.
+///
+/// 这是一个“把 Eth RPC API 装配起来”的 builder：
+/// 给定已启动节点组件（provider/pool/evm…）和 RPC 上下文，产出 `EthApi` 实例并注册到 RPC server。
 #[derive(Debug)]
 pub struct EthereumEthApiBuilder<NetworkT = Ethereum>(PhantomData<NetworkT>);
 
@@ -168,11 +199,18 @@ where
     type EthApi = EthApiFor<N, NetworkT>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
+        // `ctx.eth_api_builder()` 会基于节点组件准备好一个 EthApi builder，这里额外把
+        // converter 配上 Network 类型（用于交易请求/返回类型的网络差异）。
         Ok(ctx.eth_api_builder().map_converter(|r| r.with_network()).build())
     }
 }
 
 /// Add-ons w.r.t. l1 ethereum.
+///
+/// 以太坊节点的“附加功能”集合，主要围绕 RPC/Engine API：
+/// - `RpcAddOns` 内部负责启动 HTTP/WS/IPC 等 RPC 服务，并装配各模块（eth, net, web3, admin…）
+/// - 这里用泛型把 Eth API builder、payload 校验器、Engine API builder、middleware 等都参数化，
+///   方便复用默认实现，也允许上层替换/定制。
 #[derive(Debug)]
 pub struct EthereumAddOns<
     N: FullNodeComponents,
@@ -209,6 +247,11 @@ where
     EthereumEthApiBuilder: EthApiBuilder<N>,
 {
     fn default() -> Self {
+        // 默认的以太坊 add-ons：使用
+        // - `EthereumEthApiBuilder`：装配 eth 模块
+        // - `EthereumEngineValidatorBuilder`：装配 payload 校验逻辑
+        // - `BasicEngineApiBuilder` / `BasicEngineValidatorBuilder`：提供 Engine API 侧默认实现
+        // - `Default::default()`：RPC middleware（默认 Identity）
         Self::new(RpcAddOns::new(
             EthereumEthApiBuilder::default(),
             EthereumEngineValidatorBuilder::default(),
@@ -225,6 +268,8 @@ where
     EthB: EthApiBuilder<N>,
 {
     /// Replace the engine API builder.
+    ///
+    /// 允许上层替换 Engine API 的构建器（例如自定义认证/路由/实现）。
     pub fn with_engine_api<T>(
         self,
         engine_api_builder: T,
@@ -237,6 +282,8 @@ where
     }
 
     /// Replace the payload validator builder.
+    ///
+    /// 允许上层替换 payload 校验器构建器（例如自定义验证规则）。
     pub fn with_payload_validator<V, T>(
         self,
         payload_validator_builder: T,
@@ -246,6 +293,8 @@ where
     }
 
     /// Sets rpc middleware
+    ///
+    /// 为 RPC 服务设置 middleware（例如鉴权、限流、日志等）。
     pub fn with_rpc_middleware<T>(
         self,
         rpc_middleware: T,
@@ -261,6 +310,7 @@ where
     ///
     /// Caution: This runtime must not be created from within asynchronous context.
     pub fn with_tokio_runtime(self, tokio_runtime: Option<tokio::runtime::Handle>) -> Self {
+        // 允许指定 RPC server 使用的 tokio runtime（例如把 RPC 放到单独 runtime）。
         let Self { inner } = self;
         Self { inner: inner.with_tokio_runtime(tokio_runtime) }
     }
@@ -291,6 +341,9 @@ where
         self,
         ctx: reth_node_api::AddOnsContext<'_, N>,
     ) -> eyre::Result<Self::Handle> {
+        // 这里是 add-ons 的“启动入口”：
+        // - 根据节点组件与配置构造各 RPC 模块实例（ValidationApi/EthConfig/TestingApi…）
+        // - 调用 inner 的 `launch_add_ons_with` 真正启动 RPC server，并把模块注册进 server
         let validation_api = ValidationApi::<_, _, <N::Types as NodeTypes>::Payload>::new(
             ctx.node.provider().clone(),
             Arc::new(ctx.node.consensus().clone()),
@@ -307,6 +360,9 @@ where
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
+                // `container` 提供模块 registry 与 module 合并器：
+                // - `merge_if_module_configured` 会检查用户是否在 `--http.api/--ws.api/...` 中启用了模块，
+                //   若启用则把对应 RPC server 注册进去；未启用则不会暴露该模块。
                 container.modules.merge_if_module_configured(
                     RethRpcModule::Flashbots,
                     validation_api.into_rpc(),
@@ -354,6 +410,11 @@ where
     EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
     RpcMiddleware: RethRpcMiddleware,
 {
+    // 这一段实现（省略了部分上下文）主要是把“RPC/Engine API 相关的辅助能力”绑定到节点类型上，
+    // 例如：
+    // - 指定 Eth RPC 的 transaction request / block 类型如何从内部类型转换为 RPC 类型
+    // - 指定本地 payload attributes builder（`LocalPayloadAttributesBuilder`）如何构造
+    // 这样上层在启动/测试时可以用统一接口操作（而无需关心具体类型细节）。
     type EthApi = EthB::EthApi;
 
     fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
@@ -422,11 +483,14 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for EthereumNode {
     fn local_payload_attributes_builder(
         chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
+        // 本地 payload attributes builder：用于在本地构造新块所需的 payload attributes。
         LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
     }
 }
 
 /// A regular ethereum evm and executor builder.
+///
+/// 负责创建 EVM 配置（`EthEvmConfig`）。它会读取 chain spec（分叉规则等）来配置 EVM 行为。
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct EthereumExecutorBuilder;
@@ -442,6 +506,7 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        // 从节点上下文拿到 chain spec，并据此构造 EVM 配置。
         Ok(EthEvmConfig::new(ctx.chain_spec()))
     }
 }
@@ -467,6 +532,12 @@ where
     type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
+        // 交易池构建流程大致是：
+        // 1) 读取 txpool 配置（以及是否禁用 blobs）
+        // 2) 计算/选择 blob cache size（如果未配置则按当前时间戳推导当前分叉的 blob params）
+        // 3) 创建 blob store（磁盘+缓存）
+        // 4) 构造交易验证器（含 EIP-4844/KZG settings、费率上限、gas 限制等）
+        // 5) 构建交易池并启动维护任务（清理/重组等）
         let pool_config = ctx.pool_config();
 
         let blobs_disabled = ctx.config().txpool.disable_blobs_support ||
@@ -527,6 +598,10 @@ where
 }
 
 /// A basic ethereum payload service.
+///
+/// 负责启动并返回网络句柄（`NetworkHandle`）。网络构建器会：
+/// - 生成网络配置（enode/key/协议等）
+/// - 启动网络任务，并把交易池接入网络以便 gossip/同步
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EthereumNetworkBuilder {
     // TODO add closure to modify network
@@ -547,6 +622,7 @@ where
         ctx: &BuilderContext<Node>,
         pool: Pool,
     ) -> eyre::Result<Self::Network> {
+        // ctx.network_builder() 负责根据配置创建网络实例；ctx.start_network() 负责真正启动。
         let network = ctx.network_builder().await?;
         let handle = ctx.start_network(network, pool);
         info!(target: "reth::cli", enode=%handle.local_node_record(), "P2P networking initialized");
@@ -555,6 +631,8 @@ where
 }
 
 /// A basic ethereum consensus builder.
+///
+/// 构建以太坊共识实现（执行层侧使用）：这里是 `EthBeaconConsensus`（PoS/Beacon 链相关规则）。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EthereumConsensusBuilder {
     // TODO add closure to modify consensus
@@ -569,11 +647,14 @@ where
     type Consensus = Arc<EthBeaconConsensus<<Node::Types as NodeTypes>::ChainSpec>>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
+        // 共识对象通常是纯逻辑（基于 chain spec 的规则），用 Arc 共享给各组件。
         Ok(Arc::new(EthBeaconConsensus::new(ctx.chain_spec())))
     }
 }
 
 /// Builder for [`EthereumEngineValidator`].
+///
+/// payload 校验器 builder：在 Engine API 收到新 payload 时，对 payload 合法性/兼容性做验证。
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct EthereumEngineValidatorBuilder;
@@ -591,6 +672,7 @@ where
     type Validator = EthereumEngineValidator<Types::ChainSpec>;
 
     async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
+        // validator 依赖 chain spec（分叉规则等），这里从 ctx.config.chain 克隆出 Arc。
         Ok(EthereumEngineValidator::new(ctx.config.chain.clone()))
     }
 }

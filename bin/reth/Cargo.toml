@@ -1,5 +1,17 @@
+# 本文件是 `bin/reth` 这个 crate（最终可执行文件 `reth`）的 Cargo 配置。
+# 主要包含：
+# - `[package]`：包元信息（大多从 workspace 继承）
+# - `[dependencies]`：本二进制依赖的内部/外部 crate
+# - `[features]`：编译期功能开关（影响依赖选择与 `#[cfg(...)]` 条件编译）
+# - `[[bin]]`：声明可执行文件入口
+#
+# 注：`*.workspace = true` 表示该字段从 workspace 根 `Cargo.toml` 的 `[workspace.package]`
+# 或 `[workspace.dependencies]` 继承统一配置（版本、edition、rust-version、依赖版本等）。
+
 [package]
+# 包名：同时也是 `cargo -p reth` 里使用的 package 名称。
 name = "reth"
+# 以下字段从 workspace 继承，保证整个仓库所有 crate 一致：
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,14 +19,19 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Reth node implementation"
+# 默认运行的二进制名（`cargo run -p reth` 时如果没指定 `--bin`）。
 default-run = "reth"
 
 [package.metadata.deb]
+# 下面这一段是给打 Debian 包（.deb）用的元信息（通常由 cargo-deb 等工具读取）。
 maintainer = "reth team"
+# `$auto` 通常表示让打包工具自动推导依赖（按 ELF 依赖等生成）。
 depends = "$auto"
 section = "network"
 priority = "optional"
+# Debian 包安装/卸载脚本所在目录。
 maintainer-scripts = "../../pkg/reth/debian/"
+# 要打进 deb 包里的文件（以及安装目标目录与权限）。
 assets = [
     "$auto",
     ["../../README.md", "usr/share/doc/reth/", "644"],
@@ -23,14 +40,18 @@ assets = [
 ]
 systemd-units = { enable = false, start = false, unit-name = "reth", unit-scripts = "../../pkg/reth/debian" }
 
+
 [lints]
+# 复用 workspace 统一的 lint 配置（clippy/rustc lints）。
 workspace = true
 
 [dependencies]
+# 依赖区：这里大部分是 workspace 内部 crate（`*.workspace = true` 会从 workspace 继承版本与来源）。
 # reth
 reth-ethereum-cli.workspace = true
 reth-chainspec.workspace = true
 reth-primitives.workspace = true
+# 数据库实现：这里显式打开 `mdbx` feature（选择 MDBX 后端）。
 reth-db = { workspace = true, features = ["mdbx"] }
 reth-provider.workspace = true
 reth-evm.workspace = true
@@ -63,34 +84,47 @@ reth-ress-protocol.workspace = true
 reth-ress-provider.workspace = true
 
 # alloy
+# 外部依赖（通过 workspace 统一版本），这里打开 `engine` feature 以支持 Engine API 相关类型。
 alloy-rpc-types = { workspace = true, features = ["engine"] }
 
 # tracing
+# 日志/追踪门面（配合 `tracing-subscriber` 等实现）。
 tracing.workspace = true
 
 # async
+# Tokio 运行时（选择需要的子 feature）。
 tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread"] }
 
 # misc
+# 文档/图示工具（常用于 README/文档渲染，不影响运行时逻辑）。
 aquamarine.workspace = true
+# CLI 参数解析（`clap::Parser` 等 derive 宏由 `derive` feature 提供；`env` 支持从环境变量读默认值）。
 clap = { workspace = true, features = ["derive", "env"] }
+# 错误处理（`eyre::Result` 等）。
 eyre.workspace = true
 
 [dev-dependencies]
+# 仅用于测试/基准/开发的依赖，不会进最终发布产物的依赖图（除非跑 tests/benches）。
 backon.workspace = true
 tempfile.workspace = true
 
 [features]
+# 功能开关（Cargo features）
+# 这些 feature 都是“编译期开关”：决定编进哪些依赖/代码分支（通常对应 `#[cfg(feature = "...")]`）。
+# 注意：这里的 `dev` feature ≠ 运行时的 `reth node --dev`（后者是 CLI 参数，启动 dev testnet）。
 default = ["jemalloc", "otlp", "otlp-logs", "reth-revm/portable", "js-tracer", "keccak-cache-global", "asm-keccak"]
 
+# 开启 OpenTelemetry tracing（导出 traces）。
 otlp = [
     "reth-ethereum-cli/otlp",
     "reth-node-core/otlp",
 ]
+# 开启 OpenTelemetry logs（导出 logs）。
 otlp-logs = [
     "reth-ethereum-cli/otlp-logs",
     "reth-node-core/otlp-logs",
 ]
+# 启用 JavaScript tracer 相关能力（通常用于调试/trace 场景，影响 rpc 与 node 侧组件）。
 js-tracer = [
     "reth-node-builder/js-tracer",
     "reth-node-ethereum/js-tracer",
@@ -98,45 +132,55 @@ js-tracer = [
     "reth-rpc-eth-types/js-tracer",
 ]
 
+# “开发特性”集合：主要用于额外 CLI 子命令/测试向量等开发工具（例如 `test-vectors`）。
+# 不是启动 dev testnet（启动 dev testnet 用运行参数 `reth node --dev` / `--dev.block-time`）。
 dev = ["reth-ethereum-cli/dev"]
 
+# 启用 keccak 汇编优化（更快的 keccak）。
 asm-keccak = [
     "reth-node-core/asm-keccak",
     "reth-primitives/asm-keccak",
     "reth-ethereum-cli/asm-keccak",
     "reth-node-ethereum/asm-keccak",
 ]
+# 启用全局 keccak cache（通常用于提升 keccak 重复计算性能）。
 keccak-cache-global = [
     "reth-node-core/keccak-cache-global",
     "reth-node-ethereum/keccak-cache-global",
 ]
+# 启用 jemalloc 作为全局分配器（在 Unix 上生效；实现位于 crates/cli/util/src/allocator.rs）。
 jemalloc = [
     "reth-cli-util/jemalloc",
     "reth-node-core/jemalloc",
     "reth-node-metrics/jemalloc",
     "reth-ethereum-cli/jemalloc",
 ]
+# 在 jemalloc 基础上启用 profiling 能力（配合 `jemalloc-prof` 相关配置）。
 jemalloc-prof = [
     "reth-cli-util/jemalloc",
     "reth-cli-util/jemalloc-prof",
     "reth-ethereum-cli/jemalloc-prof",
     "reth-node-metrics/jemalloc-prof",
 ]
+# 额外启用 jemalloc symbols（通常用于更好的 profiling/符号化体验）。
 jemalloc-symbols = [
     "jemalloc-prof",
     "reth-ethereum-cli/jemalloc-symbols",
 ]
+# 启用 “unprefixed malloc”（偏向可复现构建/兼容性需求）。
 jemalloc-unprefixed = [
     "reth-cli-util/jemalloc-unprefixed",
     "reth-node-core/jemalloc",
     "reth-node-metrics/jemalloc",
     "reth-ethereum-cli/jemalloc",
 ]
+# 通过 Tracy 采集 allocator 分配/释放事件（会把选定的分配器包一层 ProfiledAllocator）。
 tracy-allocator = [
     "reth-cli-util/tracy-allocator",
     "reth-ethereum-cli/tracy-allocator",
     "tracy",
 ]
+# 启用 Tracy profiling（通常用于性能分析/火焰图等）。
 tracy = [
     "reth-ethereum-cli/tracy",
     "reth-node-core/tracy",
@@ -145,43 +189,53 @@ tracy = [
 # Because jemalloc is default and preferred over snmalloc when both features are
 # enabled, `--no-default-features` should be used when enabling snmalloc or
 # snmalloc-native.
+# 启用 snmalloc 作为候选分配器（在 Unix 上生效；如同时启用 jemalloc，代码里会优先选 jemalloc）。
+# 若你确实想用 snmalloc，请用 `--no-default-features --features snmalloc`。
 snmalloc = [
     "reth-cli-util/snmalloc",
     "reth-ethereum-cli/snmalloc",
 ]
+# 启用 snmalloc 的 native-cpu 优化（对本机 CPU 做特定优化）。
 snmalloc-native = [
     "reth-cli-util/snmalloc-native",
     "reth-ethereum-cli/snmalloc-native",
 ]
 
+# 尽量只输出 error 级别日志（更干净的输出，适合某些生产/基准环境）。
 min-error-logs = [
     "tracing/release_max_level_error",
     "reth-ethereum-cli/min-error-logs",
     "reth-node-core/min-error-logs",
 ]
+# 将编译期最大日志等级限制为 warn。
 min-warn-logs = [
     "tracing/release_max_level_warn",
     "reth-ethereum-cli/min-warn-logs",
     "reth-node-core/min-warn-logs",
 ]
+# 将编译期最大日志等级限制为 info。
 min-info-logs = [
     "tracing/release_max_level_info",
     "reth-ethereum-cli/min-info-logs",
     "reth-node-core/min-info-logs",
 ]
+# 将编译期最大日志等级限制为 debug。
 min-debug-logs = [
     "tracing/release_max_level_debug",
     "reth-ethereum-cli/min-debug-logs",
     "reth-node-core/min-debug-logs",
 ]
+# 将编译期最大日志等级限制为 trace。
 min-trace-logs = [
     "tracing/release_max_level_trace",
     "reth-ethereum-cli/min-trace-logs",
     "reth-node-core/min-trace-logs",
 ]
 
+# “edge” 特性：通常表示启用一些前沿/实验性能力或配置（具体能力由被转发的 crate 定义）。
 edge = ["reth-ethereum-cli/edge", "reth-node-core/edge"]
 
 [[bin]]
+# 声明本包生成的二进制：名字是 `reth`，入口是 `src/main.rs`。
 name = "reth"
 path = "src/main.rs"

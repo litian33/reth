@@ -119,17 +119,31 @@ extern "C" fn print_stack_trace(_: libc::c_int) {
 /// When SIGSEGV is delivered to the process, print a stack trace and then exit.
 pub fn install() {
     unsafe {
+        // 为信号处理函数准备“备用信号栈”(alternate signal stack)：
+        // - 典型场景是 stack overflow 导致 SIGSEGV，此时当前线程的正常栈可能已经不可用
+        // - 如果处理函数继续在“坏掉的栈”上执行，很可能二次崩溃，拿不到回溯信息
+        //
+        // 所以我们提前分配一段内存作为信号处理时的栈，并通过 `sigaltstack` 注册。
         let alt_stack_size: usize = min_sigstack_size() + 64 * 1024;
         let mut alt_stack: libc::stack_t = mem::zeroed();
+        // 分配备用栈内存。对 signal stack 来说只要可用地址即可，这里用 1 字节对齐。
         alt_stack.ss_sp = alloc(Layout::from_size_align(alt_stack_size, 1).unwrap()).cast();
         alt_stack.ss_size = alt_stack_size;
+        // 注册备用信号栈（第二个参数用于读取旧的备用栈，这里不需要）。
         libc::sigaltstack(&raw const alt_stack, ptr::null_mut());
 
+        // 安装 SIGSEGV 的 sigaction 处理器。
+        // 这里用的是 sa_sigaction（而不是 sa_handler），以便使用更通用的 handler 形式。
         let mut sa: libc::sigaction = mem::zeroed();
         sa.sa_sigaction =
             print_stack_trace as unsafe extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // SA_ONSTACK：在备用信号栈上运行 handler（对应上面的 sigaltstack）。
+        // SA_RESETHAND：handler 触发一次后恢复默认处理，避免重复进入。
+        // SA_NODEFER：进入 handler 时不自动屏蔽同类信号（不把 SIGSEGV 加到 mask 里）。
         sa.sa_flags = libc::SA_NODEFER | libc::SA_RESETHAND | libc::SA_ONSTACK;
+        // 清空信号屏蔽集：handler 运行时不额外屏蔽其它信号。
         libc::sigemptyset(&raw mut sa.sa_mask);
+        // 将 SIGSEGV 的处理动作设置为我们定义的 handler（第三个参数用于保存旧 action，这里不需要）。
         libc::sigaction(libc::SIGSEGV, &raw const sa, ptr::null_mut());
     }
 }
@@ -137,6 +151,8 @@ pub fn install() {
 /// Modern kernels on modern hardware can have dynamic signal stack sizes.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn min_sigstack_size() -> usize {
+    // Linux/Android 上可以通过 `getauxval(AT_MINSIGSTKSZ)` 获取内核建议的最小 signal stack 大小。
+    // 兼容：老内核可能不提供该值（返回 0），因此取 `MINSIGSTKSZ` 与 auxval 的最大值。
     const AT_MINSIGSTKSZ: core::ffi::c_ulong = 51;
     let dynamic_sigstksz = unsafe { libc::getauxval(AT_MINSIGSTKSZ) };
     // If getauxval couldn't find the entry, it returns 0,
@@ -148,5 +164,6 @@ fn min_sigstack_size() -> usize {
 /// Not all OS support hardware where this is needed.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const fn min_sigstack_size() -> usize {
+    // 其它平台没有动态最小值，直接使用 libc 提供的常量。
     libc::MINSIGSTKSZ
 }

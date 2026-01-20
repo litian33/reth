@@ -1,12 +1,26 @@
-//! Consensus protocol functions
+//! 共识（Consensus）相关的抽象与通用校验逻辑。
+//!
+//! 这份文件定义了 reth 在“共识验证”层面使用的核心 trait 与错误类型：
+//! - [`HeaderValidator`]：只验证 header 本身以及 header ↔ parent 的关系（不依赖世界状态）
+//! - [`Consensus`]：在 `HeaderValidator` 基础上，增加 block body 与 header 的一致性校验，
+//!   以及“执行前”就能完成的 block 校验
+//! - [`FullConsensus`]：在 `Consensus` 基础上，增加“执行后/依赖世界状态”的校验入口
+//! - [`ConsensusError`]：统一的共识校验错误枚举
+//!
+//! 直观区分：
+//! - pre-execution：不需要执行交易/不需要世界状态的检查（例如 timestamp、gas limit、roots）
+//! - post-execution：必须拿到执行结果（receipts/state root 等）才能验证的检查
 
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
+// 非测试构建时，如果某个依赖只在 Cargo.toml 里声明但代码里没用到，这里会发出告警。
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+// 在 docs.rs 构建时启用 doc_cfg，用于在文档里标注 `#[cfg(...)]` 的可用性。
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// 如果未启用 `std` feature，则以 no_std 方式编译（但这里仍可通过 `alloc` 使用堆分配类型）。
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -20,6 +34,9 @@ use core::error::Error;
 ///
 /// When provided to [`FullConsensus::validate_block_post_execution`], this allows skipping
 /// the receipt root computation and using the pre-computed values instead.
+///
+/// 中文解释：执行后验证时，通常需要根据 receipts 计算 receipt root 与 logs bloom。
+/// 如果上层已经计算好了（例如执行器返回了这些结果），这里允许把它们直接传进来以避免重复计算。
 pub type ReceiptRootBloom = (B256, Bloom);
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{
@@ -30,6 +47,8 @@ use reth_primitives_traits::{
 };
 
 /// A consensus implementation that does nothing.
+///
+/// 一个“空实现”共识：用于测试、占位或某些不需要共识校验的场景。
 pub mod noop;
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -38,6 +57,9 @@ pub mod test_utils;
 
 /// [`Consensus`] implementation which knows full node primitives and is able to validation block's
 /// execution outcome.
+///
+/// `FullConsensus` = `Consensus` + “执行后校验”：
+/// 也就是当你已经执行完区块（拿到了 receipts / state root 等）后，再进行与世界状态相关的验证。
 #[auto_impl::auto_impl(&, Arc)]
 pub trait FullConsensus<N: NodePrimitives>: Consensus<N::Block> {
     /// Validate a block considering world state, i.e. things that can not be checked before
@@ -58,6 +80,11 @@ pub trait FullConsensus<N: NodePrimitives>: Consensus<N::Block> {
 }
 
 /// Consensus is a protocol that chooses canonical chain.
+///
+/// `Consensus` 是“区块级别”的共识验证接口：
+/// - 继承 [`HeaderValidator`]：先把 header 校验能力纳入
+/// - `validate_body_against_header`：检查 body 与 header 的承诺值是否一致（tx root、ommers root 等）
+/// - `validate_block_pre_execution`：执行前可以完成的完整 block 校验（但不含 sender recovery / 执行）
 #[auto_impl::auto_impl(&, Arc)]
 pub trait Consensus<B: Block>: HeaderValidator<B::Header> {
     /// Ensures that body field values match the header.
@@ -81,6 +108,11 @@ pub trait Consensus<B: Block>: HeaderValidator<B::Header> {
 }
 
 /// `HeaderValidator` is a protocol that validates headers and their relationships.
+///
+/// `HeaderValidator` 专注于 header：
+/// - `validate_header`：header 自身是否自洽（hash/字段格式等）
+/// - `validate_header_against_parent`：header 与 parent header 的关系（number/timestamp/basefee/gas limit 等）
+/// - `validate_header_range`：默认实现，批量验证一段连续 header（要求按 block number 递增）
 #[auto_impl::auto_impl(&, Arc)]
 pub trait HeaderValidator<H = Header>: Debug + Send + Sync {
     /// Validate if header is correct and follows consensus specification.
@@ -117,6 +149,10 @@ pub trait HeaderValidator<H = Header>: Debug + Send + Sync {
     where
         H: Clone,
     {
+        // 约定：headers 是按 block number 递增排序的。
+        // 逻辑：
+        // 1) 先验证第一条 header 自身
+        // 2) 之后对每个 header：先验证自身，再验证与前一个 header 的 parent 关系
         if let Some((initial_header, remaining_headers)) = headers.split_first() {
             self.validate_header(initial_header)
                 .map_err(|e| HeaderConsensusError(e, initial_header.clone()))?;
@@ -133,6 +169,16 @@ pub trait HeaderValidator<H = Header>: Debug + Send + Sync {
 }
 
 /// Consensus Errors
+///
+/// 共识校验的统一错误类型。
+///
+/// 这里的错误大体可以分为几类：
+/// - header 规则错误（gas limit/gas used/base fee/timestamp 等）
+/// - body ↔ header 承诺值不匹配（state root/tx root/receipt root/bloom/withdrawals root 等）
+/// - 链关系错误（parent unknown、number mismatch、parent hash mismatch）
+/// - Merge/PoS 过渡后的约束（difficulty/nonce/ommer root 等应为零/空）
+/// - EIP-4844 blob 相关约束（blob gas used / excess blob gas / KZG 等）
+/// - “自定义/外部”错误（例如 L2 注入的额外共识规则）
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ConsensusError {
     /// Error when the gas used in the header exceeds the gas limit.
@@ -425,6 +471,8 @@ pub enum ConsensusError {
 
 impl ConsensusError {
     /// Returns `true` if the error is a state root error.
+    ///
+    /// 某些上层逻辑会把“state root 不匹配”当成一个特殊类别（例如区分执行错误 vs 数据不一致）。
     pub const fn is_state_root_error(&self) -> bool {
         matches!(self, Self::BodyStateRootDiff(_))
     }
@@ -443,11 +491,17 @@ impl From<TxGasLimitTooHighErr> for ConsensusError {
 }
 
 /// `HeaderConsensusError` combines a `ConsensusError` with the `SealedHeader` it relates to.
+///
+/// 批量验证 header 时，如果发生错误，光有 `ConsensusError` 往往不够定位；
+/// 这个类型把“错误 + 出错的 header”捆在一起，便于上层打印/记录问题。
 #[derive(thiserror::Error, Debug)]
 #[error("Consensus error: {0}, Invalid header: {1:?}")]
 pub struct HeaderConsensusError<H>(ConsensusError, SealedHeader<H>);
 
 /// EIP-7825: Transaction gas limit exceeds maximum allowed
+///
+/// EIP-7825 相关错误：单笔交易的 gas limit 超过了允许的上限。
+/// 这类错误通常发生在 txpool/共识预检查阶段（拒绝明显不合法的交易）。
 #[derive(thiserror::Error, Debug, Eq, PartialEq, Clone)]
 #[error("transaction gas limit ({gas_limit}) is greater than the cap ({max_allowed})")]
 pub struct TxGasLimitTooHighErr {
