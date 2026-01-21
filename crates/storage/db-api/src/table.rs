@@ -7,9 +7,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
-/// Trait that will transform the data to be saved in the DB in a (ideally) compressed format
+/// 能够将数据转换为（理想情况下）压缩格式以保存到数据库的 trait
 pub trait Compress: Send + Sync + Sized + Debug {
-    /// Compressed type.
+    /// 压缩后的类型。
     type Compressed: bytes::BufMut
         + AsRef<[u8]>
         + AsMut<[u8]>
@@ -19,114 +19,106 @@ pub trait Compress: Send + Sync + Sized + Debug {
         + Sync
         + Debug;
 
-    /// If the type cannot be compressed, return its inner reference as `Some(self.as_ref())`
+    /// 如果类型无法压缩，则将其内部引用返回为 `Some(self.as_ref())`
     fn uncompressable_ref(&self) -> Option<&[u8]> {
         None
     }
 
-    /// Compresses data going into the database.
+    /// 压缩进入数据库的数据。
     fn compress(self) -> Self::Compressed {
         let mut buf = Self::Compressed::default();
         self.compress_to_buf(&mut buf);
         buf
     }
 
-    /// Compresses data to a given buffer.
+    /// 将数据压缩到给定的缓冲区中。
     fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B);
 }
 
-/// Trait that will transform the data to be read from the DB.
+/// 能够转换从数据库读取的数据的 trait。
 pub trait Decompress: Send + Sync + Sized + Debug {
-    /// Decompresses data coming from the database.
+    /// 解压来自数据库的数据。
     fn decompress(value: &[u8]) -> Result<Self, DatabaseError>;
 
-    /// Decompresses owned data coming from the database.
+    /// 解压来自数据库的所有权数据。
     fn decompress_owned(value: Vec<u8>) -> Result<Self, DatabaseError> {
         Self::decompress(&value)
     }
 }
 
-/// Trait that will transform the data to be saved in the DB.
+/// 能够转换要保存到数据库的数据的 trait。
 pub trait Encode: Send + Sync + Sized + Debug {
-    /// Encoded type.
+    /// 编码后的类型。
     type Encoded: AsRef<[u8]> + Into<Vec<u8>> + Send + Sync + Ord + Debug;
 
-    /// Encodes data going into the database.
+    /// 编码进入数据库的数据。
     fn encode(self) -> Self::Encoded;
 }
 
-/// Trait that will transform the data to be read from the DB.
+/// 能够转换从数据库读取的数据的 trait。
 pub trait Decode: Send + Sync + Sized + Debug {
-    /// Decodes data coming from the database.
+    /// 解码来自数据库的数据。
     fn decode(value: &[u8]) -> Result<Self, DatabaseError>;
 
-    /// Decodes owned data coming from the database.
+    /// 解码来自数据库的所有权数据。
     fn decode_owned(value: Vec<u8>) -> Result<Self, DatabaseError> {
         Self::decode(&value)
     }
 }
 
-/// Generic trait that enforces the database key to implement [`Encode`] and [`Decode`].
+/// 强制数据库键实现 [`Encode`] 和 [`Decode`] 的泛型 trait。
 pub trait Key: Encode + Decode + Ord + Clone + Serialize + for<'a> Deserialize<'a> {}
 
 impl<T> Key for T where T: Encode + Decode + Ord + Clone + Serialize + for<'a> Deserialize<'a> {}
 
-/// Generic trait that enforces the database value to implement [`Compress`] and [`Decompress`].
+/// 强制数据库值实现 [`Compress`] 和 [`Decompress`] 的泛型 trait。
 pub trait Value: Compress + Decompress + Serialize {}
 
 impl<T> Value for T where T: Compress + Decompress + Serialize {}
 
-/// Generic trait that a database table should follow.
+/// 数据库表应该遵循的通用 trait。
 ///
-/// The [`Table::Key`] and [`Table::Value`] types should implement [`Encode`] and
-/// [`Decode`] when appropriate. These traits define how the data is stored and read from the
-/// database.
-///
-/// It allows for the use of codecs. See [`crate::models::ShardedKey`] for a custom
-/// implementation.
+/// [`Table::Key`] 和 [`Table::Value`] 类型应在适当的时候实现 [`Encode`] 和
+/// [`Decode`]。这些 trait 定义了数据如何在数据库中存储和读取。
 pub trait Table: Send + Sync + Debug + 'static {
-    /// The table's name.
+    /// 表名。
     const NAME: &'static str;
 
-    /// Whether the table is also a `DUPSORT` table.
+    /// 该表是否也是 `DUPSORT` 表（允许重复键）。
     const DUPSORT: bool;
 
-    /// Key element of `Table`.
+    /// `Table` 的键元素。
     ///
-    /// Sorting should be taken into account when encoding this.
+    /// 编码时应考虑排序。
     type Key: Key;
 
-    /// Value element of `Table`.
+    /// `Table` 的值元素。
     type Value: Value;
 }
 
-/// Trait that provides object-safe access to the table's metadata.
+/// 提供对表元数据的对象安全（object-safe）访问的 trait。
 pub trait TableInfo: Send + Sync + Debug + 'static {
-    /// The table's name.
+    /// 表名。
     fn name(&self) -> &'static str;
 
-    /// Whether the table is a `DUPSORT` table.
+    /// 该表是否为 `DUPSORT` 表。
     fn is_dupsort(&self) -> bool;
 }
 
-/// Tuple with `T::Key` and `T::Value`.
+/// 包含 `T::Key` 和 `T::Value` 的元组。
 pub type TableRow<T> = (<T as Table>::Key, <T as Table>::Value);
 
-/// `DupSort` allows for keys to be repeated in the database.
-///
-/// Upstream docs: <https://libmdbx.dqdkfa.ru/usage.html#autotoc_md48>
+/// `DupSort` 允许键在数据库中重复。
 pub trait DupSort: Table {
-    /// The table subkey. This type must implement [`Encode`] and [`Decode`].
+    /// 表子键。此类型必须实现 [`Encode`] 和 [`Decode`]。
     ///
-    /// Sorting should be taken into account when encoding this.
-    ///
-    /// Upstream docs: <https://libmdbx.dqdkfa.ru/usage.html#autotoc_md48>
+    /// 编码时应考虑排序。
     type SubKey: Key;
 }
 
-/// Allows duplicating tables across databases
+/// 允许跨数据库复制表
 pub trait TableImporter: DbTxMut {
-    /// Imports all table data from another transaction.
+    /// 从另一个事务导入所有表数据。
     fn import_table<T: Table, R: DbTx>(&self, source_tx: &R) -> Result<(), DatabaseError> {
         let mut destination_cursor = self.cursor_write::<T>()?;
 
@@ -138,10 +130,10 @@ pub trait TableImporter: DbTxMut {
         Ok(())
     }
 
-    /// Imports table data from another transaction within a range.
+    /// 在指定范围内从另一个事务导入表数据。
     ///
-    /// This method works correctly with both regular and `DupSort` tables. For `DupSort` tables,
-    /// all duplicate entries within the range are preserved during import.
+    /// 此方法对常规表和 `DupSort` 表均能正确工作。对于 `DupSort` 表，
+    /// 导入期间会保留范围内所有重复的条目。
     fn import_table_with_range<T: Table, R: DbTx>(
         &self,
         source_tx: &R,
@@ -166,7 +158,7 @@ pub trait TableImporter: DbTxMut {
         Ok(())
     }
 
-    /// Imports all dupsort data from another transaction.
+    /// 从另一个事务导入所有 dupsort 数据。
     fn import_dupsort<T: DupSort, R: DbTx>(&self, source_tx: &R) -> Result<(), DatabaseError> {
         let mut destination_cursor = self.cursor_dup_write::<T>()?;
         let mut cursor = source_tx.cursor_dup_read::<T>()?;

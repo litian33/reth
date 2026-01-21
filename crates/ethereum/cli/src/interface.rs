@@ -135,6 +135,7 @@ impl<
         Fut: Future<Output = eyre::Result<()>>,
         C: ChainSpecParser<ChainSpec = ChainSpec>,
     {
+        // run step 001
         self.with_runner(CliRunner::try_default_runtime()?, launcher)
     }
 
@@ -186,6 +187,7 @@ impl<
     {
         let mut app = self.configure();
         app.set_runner(runner);
+        // run step 002
         app.run(FnLauncher::new::<C, Ext>(async move |builder, ext| launcher(builder, ext).await))
     }
 

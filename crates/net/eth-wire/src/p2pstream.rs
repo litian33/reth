@@ -29,39 +29,33 @@ use tracing::{debug, trace};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// [`MAX_PAYLOAD_SIZE`] is the maximum size of an uncompressed message payload.
-/// This is defined in [EIP-706](https://eips.ethereum.org/EIPS/eip-706).
+/// [`MAX_PAYLOAD_SIZE`] 是未压缩消息负载的最大大小（16MB）。
+/// 这是在 [EIP-706](https://eips.ethereum.org/EIPS/eip-706) 中定义的。
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
 
-/// [`MAX_RESERVED_MESSAGE_ID`] is the maximum message ID reserved for the `p2p` subprotocol. If
-/// there are any incoming messages with an ID greater than this, they are subprotocol messages.
+/// [`MAX_RESERVED_MESSAGE_ID`] 是为 `p2p` 子协议保留的最大消息 ID。
+/// 任何 ID 大于此值的入站消息均为子协议消息。
 pub const MAX_RESERVED_MESSAGE_ID: u8 = 0x0f;
 
-/// [`MAX_P2P_MESSAGE_ID`] is the maximum message ID in use for the `p2p` subprotocol.
+/// [`MAX_P2P_MESSAGE_ID`] 是 `p2p` 子协议正在使用的最大消息 ID。
 const MAX_P2P_MESSAGE_ID: u8 = P2PMessageID::Pong as u8;
 
-/// [`HANDSHAKE_TIMEOUT`] determines the amount of time to wait before determining that a `p2p`
-/// handshake has timed out.
+/// [`HANDSHAKE_TIMEOUT`] 确定在认定 `p2p` 握手超时之前等待的时间。
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// [`PING_TIMEOUT`] determines the amount of time to wait before determining that a `p2p` ping has
-/// timed out.
+/// [`PING_TIMEOUT`] 确定在认定 `p2p` ping 超时之前等待的时间。
 const PING_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// [`PING_INTERVAL`] determines the amount of time to wait between sending `p2p` ping messages
-/// when the peer is responsive.
+/// [`PING_INTERVAL`] 确定在对等方响应时发送 `p2p` ping 消息之间等待的时间。
 const PING_INTERVAL: Duration = Duration::from_secs(60);
 
-/// [`MAX_P2P_CAPACITY`] is the maximum number of messages that can be buffered to be sent in the
-/// `p2p` stream.
+/// [`MAX_P2P_CAPACITY`] 是 `p2p` 流中可以缓冲发送的消息的最大数量。
 ///
-/// Note: this default is rather low because it is expected that the [`P2PStream`] wraps an
-/// [`ECIESStream`](reth_ecies::stream::ECIESStream) which internally already buffers a few MB of
-/// encoded data.
+/// 注意：这个默认值相当低，因为预期 [`P2PStream`] 会包装一个
+/// [`ECIESStream`](reth_ecies::stream::ECIESStream)，后者内部已经缓冲了几 MB 的编码数据。
 const MAX_P2P_CAPACITY: usize = 2;
 
-/// An un-authenticated [`P2PStream`]. This is consumed and returns a [`P2PStream`] after the
-/// `Hello` handshake is completed.
+/// 未经过身份验证的 [`P2PStream`]。在完成 `Hello` 握手后，它会被消费并返回一个 [`P2PStream`]。
 #[pin_project]
 #[derive(Debug)]
 pub struct UnauthedP2PStream<S> {
@@ -70,12 +64,12 @@ pub struct UnauthedP2PStream<S> {
 }
 
 impl<S> UnauthedP2PStream<S> {
-    /// Create a new `UnauthedP2PStream` from a type `S` which implements `Stream` and `Sink`.
+    /// 从实现 `Stream` 和 `Sink` 的类型 `S` 创建一个新的 `UnauthedP2PStream`。
     pub const fn new(inner: S) -> Self {
         Self { inner }
     }
 
-    /// Returns a reference to the inner stream.
+    /// 返回对内部流的引用。
     pub const fn inner(&self) -> &S {
         &self.inner
     }
@@ -85,25 +79,26 @@ impl<S> UnauthedP2PStream<S>
 where
     S: Stream<Item = io::Result<BytesMut>> + Sink<Bytes, Error = io::Error> + Unpin,
 {
-    /// Consumes the `UnauthedP2PStream` and returns a `P2PStream` after the `Hello` handshake is
-    /// completed successfully. This also returns the `Hello` message sent by the remote peer.
+    /// 消费 `UnauthedP2PStream`，并在 `Hello` 握手成功完成后返回 `P2PStream`。
+    /// 同时返回远程对等方发送的 `Hello` 消息。
     pub async fn handshake(
         mut self,
         hello: HelloMessageWithProtocols,
     ) -> Result<(P2PStream<S>, HelloMessage), P2PStreamError> {
         trace!(?hello, "sending p2p hello to peer");
 
-        // send our hello message with the Sink
+        // 使用 Sink 发送我们的 hello 消息
         self.inner.send(alloy_rlp::encode(P2PMessage::Hello(hello.message())).into()).await?;
 
+        // 等待对方的第一个消息，带有超时机制
         let first_message_bytes = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.inner.next())
             .await
             .or(Err(P2PStreamError::HandshakeError(P2PHandshakeError::Timeout)))?
             .ok_or(P2PStreamError::HandshakeError(P2PHandshakeError::NoResponse))??;
 
-        // Check that the uncompressed message length does not exceed the max payload size.
-        // Note: The first message (Hello/Disconnect) is not snappy compressed. We will check the
-        // decompressed length again for subsequent messages after the handshake.
+        // 检查未压缩消息长度是否超过最大负载大小。
+        // 注意：第一个消息 (Hello/Disconnect) 没有经过 snappy 压缩。
+        // 握手后的后续消息将再次检查解压缩后的长度。
         if first_message_bytes.len() > MAX_PAYLOAD_SIZE {
             return Err(P2PStreamError::MessageTooBig {
                 message_size: first_message_bytes.len(),
@@ -111,17 +106,16 @@ where
             })
         }
 
-        // The first message sent MUST be a hello OR disconnect message
+        // 发送的第一个消息必须是 hello 或 disconnect 消息
         //
-        // If the first message is a disconnect message, we should not decode using
-        // Decodable::decode, because the first message (either Disconnect or Hello) is not snappy
-        // compressed, and the Decodable implementation assumes that non-hello messages are snappy
-        // compressed.
+        // 如果第一个消息是 disconnect，我们不应该使用 Decodable::decode 解码，
+        // 因为第一个消息（无论 Disconnect 还是 Hello）都没有经过 snappy 压缩，
+        // 而 Decodable 实现假设非 hello 消息都经过了 snappy 压缩。
         let their_hello = match P2PMessage::decode(&mut &first_message_bytes[..]) {
             Ok(P2PMessage::Hello(hello)) => Ok(hello),
             Ok(P2PMessage::Disconnect(reason)) => {
                 if matches!(reason, DisconnectReason::TooManyPeers) {
-                    // Too many peers is a very common disconnect reason that spams the DEBUG logs
+                    // TooManyPeers 是非常常见的断开连接原因，避免在 DEBUG 日志中产生太多干扰
                     trace!(%reason, "Disconnected by peer during handshake");
                 } else {
                     debug!(%reason, "Disconnected by peer during handshake");
@@ -144,8 +138,9 @@ where
             "validating incoming p2p hello from peer"
         );
 
+        // 验证协议版本是否一致
         if (hello.protocol_version as u8) != their_hello.protocol_version as u8 {
-            // send a disconnect message notifying the peer of the protocol version mismatch
+            // 发送断开连接消息通知对方协议版本不匹配
             self.send_disconnect(DisconnectReason::IncompatibleP2PProtocolVersion).await?;
             return Err(P2PStreamError::MismatchedProtocolVersion(GotExpected {
                 got: their_hello.protocol_version,
@@ -153,13 +148,13 @@ where
             }))
         }
 
-        // determine shared capabilities (currently returns only one capability)
+        // 确定共享能力 (目前仅返回一个共享能力)
         let capability_res =
             SharedCapabilities::try_new(hello.protocols, their_hello.capabilities.clone());
 
         let shared_capability = match capability_res {
             Err(err) => {
-                // we don't share any capabilities, send a disconnect message
+                // 如果没有共享能力，发送断开连接消息
                 self.send_disconnect(DisconnectReason::UselessPeer).await?;
                 Err(err)
             }
@@ -176,7 +171,7 @@ impl<S> UnauthedP2PStream<S>
 where
     S: Sink<Bytes, Error = io::Error> + Unpin,
 {
-    /// Send a disconnect message during the handshake. This is sent without snappy compression.
+    /// 在握手期间发送断开连接消息。此消息发送时不使用 snappy 压缩。
     pub async fn send_disconnect(
         &mut self,
         reason: DisconnectReason,
@@ -204,64 +199,57 @@ where
     }
 }
 
-/// A `P2PStream` wraps over any `Stream` that yields bytes and makes it compatible with `p2p`
-/// protocol messages.
+/// `P2PStream` 包装任何产生字节的 `Stream`，并使其与 `p2p` 协议消息兼容。
 ///
-/// This stream supports multiple shared capabilities, that were negotiated during the handshake.
+/// 该流支持在握手期间协商的多个共享能力。
 ///
-/// ### Message-ID based multiplexing
+/// ### 基于消息 ID 的多路复用 (Message-ID based multiplexing)
 ///
-/// > Each capability is given as much of the message-ID space as it needs. All such capabilities
-/// > must statically specify how many message IDs they require. On connection and reception of the
-/// > Hello message, both peers have equivalent information about what capabilities they share
-/// > (including versions) and are able to form consensus over the composition of message ID space.
+/// > 每个功能（capability）根据其需要被分配一定范围的消息 ID 空间。所有此类功能必须静态指定它们需要的消息 ID 数量。
+/// > 在连接和接收到 Hello 消息时，双方都拥有关于它们共享哪些功能（包括版本）的等效信息，
+/// > 并能够对消息 ID 空间的构成达成共识。
 ///
-/// > Message IDs are assumed to be compact from ID 0x10 onwards (0x00-0x0f is reserved for the
-/// > "p2p" capability) and given to each shared (equal-version, equal-name) capability in
-/// > alphabetic order. Capability names are case-sensitive. Capabilities which are not shared are
-/// > ignored. If multiple versions are shared of the same (equal name) capability, the numerically
-/// > highest wins, others are ignored.
+/// > 消息 ID 被假定为从 ID 0x10 开始紧凑分配（0x00-0x0f 保留给 "p2p" 功能），
+/// > 并按字母顺序分配给每个共享（版本相同、名称相同）的功能。功能名称区分大小写。
+/// > 未共享的功能将被忽略。如果同一个（名称相同）功能共享多个版本，则数值最高的版本获胜，其他版本被忽略。
 ///
-/// See also <https://github.com/ethereum/devp2p/blob/master/rlpx.md#message-id-based-multiplexing>
+/// 详见 <https://github.com/ethereum/devp2p/blob/master/rlpx.md#message-id-based-multiplexing>
 ///
-/// This stream emits _non-empty_ Bytes that start with the normalized message id, so that the first
-/// byte of each message starts from 0. If this stream only supports a single capability, for
-/// example `eth` then the first byte of each message will match
-/// [EthMessageID](reth_eth_wire_types::message::EthMessageID).
+/// 此流发出 _非空_ 的 Bytes，这些字节以标准化的消息 ID 开始，因此每个消息的第一字节从 0 开始。
+/// 如果此流仅支持单个功能（例如 `eth`），则每个消息的第一字节将与
+/// [EthMessageID](reth_eth_wire_types::message::EthMessageID) 匹配。
 #[pin_project]
 #[derive(Debug)]
 pub struct P2PStream<S> {
+    /// 内部传输流
     #[pin]
     inner: S,
 
-    /// The snappy encoder used for compressing outgoing messages
+    /// 用于压缩传出消息的 snappy 编码器
     encoder: snap::raw::Encoder,
 
-    /// The snappy decoder used for decompressing incoming messages
+    /// 用于解压传入消息的 snappy 解码器
     decoder: snap::raw::Decoder,
 
-    /// The state machine used for keeping track of the peer's ping status.
+    /// 用于跟踪对等方 ping 状态的状态机
     pinger: Pinger,
 
-    /// The supported capability for this stream.
+    /// 此流支持的共享能力
     shared_capabilities: SharedCapabilities,
 
-    /// Outgoing messages buffered for sending to the underlying stream.
+    /// 缓冲的待发送传出消息
     outgoing_messages: VecDeque<Bytes>,
 
-    /// Maximum number of messages that we can buffer here before the [Sink] impl returns
-    /// [`Poll::Pending`].
+    /// 在 [Sink] 实现返回 [`Poll::Pending`] 之前可以缓冲的消息最大数量
     outgoing_message_buffer_capacity: usize,
 
-    /// Whether this stream is currently in the process of disconnecting by sending a disconnect
-    /// message.
+    /// 当前流是否正处于通过发送断开连接消息来断开连接的过程中
     disconnecting: bool,
 }
 
 impl<S> P2PStream<S> {
-    /// Create a new [`P2PStream`] from the provided stream.
-    /// New [`P2PStream`]s are assumed to have completed the `p2p` handshake successfully and are
-    /// ready to send and receive subprotocol messages.
+    /// 从提供的流创建新的 [`P2PStream`]。
+    /// 假定新的 [`P2PStream`] 已成功完成 `p2p` 握手，并准备好发送和接收子协议消息。
     pub fn new(inner: S, shared_capabilities: SharedCapabilities) -> Self {
         Self {
             inner,
@@ -275,65 +263,62 @@ impl<S> P2PStream<S> {
         }
     }
 
-    /// Returns a reference to the inner stream.
+    /// 返回对内部流的引用。
     pub const fn inner(&self) -> &S {
         &self.inner
     }
 
-    /// Sets a custom outgoing message buffer capacity.
+    /// 设置自定义的传出消息缓冲区容量。
     ///
     /// # Panics
     ///
-    /// If the provided capacity is `0`.
+    /// 如果提供的容量为 `0`。
     pub const fn set_outgoing_message_buffer_capacity(&mut self, capacity: usize) {
         self.outgoing_message_buffer_capacity = capacity;
     }
 
-    /// Returns the shared capabilities for this stream.
+    /// 返回此流的共享能力。
     ///
-    /// This includes all the shared capabilities that were negotiated during the handshake and
-    /// their offsets based on the number of messages of each capability.
+    /// 这包括握手期间协商的所有共享能力及其基于每个功能消息数量的偏移量。
     pub const fn shared_capabilities(&self) -> &SharedCapabilities {
         &self.shared_capabilities
     }
 
-    /// Returns `true` if the stream has outgoing capacity.
+    /// 如果流仍有传出容量，则返回 `true`。
     fn has_outgoing_capacity(&self) -> bool {
         self.outgoing_messages.len() < self.outgoing_message_buffer_capacity
     }
 
-    /// Queues in a _snappy_ encoded [`P2PMessage::Pong`] message.
+    /// 将 _snappy_ 编码的 [`P2PMessage::Pong`] 消息放入队列。
     fn send_pong(&mut self) {
         self.outgoing_messages.push_back(Bytes::from(alloy_rlp::encode(P2PMessage::Pong)));
     }
 
-    /// Queues in a _snappy_ encoded [`P2PMessage::Ping`] message.
+    /// 将 _snappy_ 编码 of [`P2PMessage::Ping`] 消息放入队列。
     pub fn send_ping(&mut self) {
         self.outgoing_messages.push_back(Bytes::from(alloy_rlp::encode(P2PMessage::Ping)));
     }
 }
 
-/// Gracefully disconnects the connection by sending a disconnect message and stop reading new
-/// messages.
+/// 通过发送断开连接消息并停止读取新消息来优雅地断开连接。
 pub trait DisconnectP2P {
-    /// Starts to gracefully disconnect.
+    /// 开始优雅地断开连接。
     fn start_disconnect(&mut self, reason: DisconnectReason) -> Result<(), P2PStreamError>;
 
-    /// Returns `true` if the connection is about to disconnect.
+    /// 如果连接即将断开，则返回 `true`。
     fn is_disconnecting(&self) -> bool;
 }
 
 impl<S> DisconnectP2P for P2PStream<S> {
-    /// Starts to gracefully disconnect the connection by sending a Disconnect message and stop
-    /// reading new messages.
+    /// 开始通过发送断开连接消息并停止读取新消息来优雅地断开连接。
     ///
-    /// Once disconnect process has started, the [`Stream`] will terminate immediately.
+    /// 一旦断开连接过程开始，[`Stream`] 将立即终止。
     ///
     /// # Errors
     ///
-    /// Returns an error only if the message fails to compress.
+    /// 仅当消息压缩失败时返回错误。
     fn start_disconnect(&mut self, reason: DisconnectReason) -> Result<(), P2PStreamError> {
-        // clear any buffered messages and queue in
+        // 清除任何缓冲的消息并放入队列
         self.outgoing_messages.clear();
         let disconnect = P2PMessage::Disconnect(reason);
         let mut buf = Vec::with_capacity(disconnect.length());
@@ -350,12 +335,10 @@ impl<S> DisconnectP2P for P2PStream<S> {
                 err
             })?;
 
-        // truncate the compressed buffer to the actual compressed size (plus one for the message
-        // id)
+        // 将压缩缓冲区截断为实际压缩大小 (加上消息 ID 的一个字节)
         compressed.truncate(compressed_size + 1);
 
-        // we do not add the capability offset because the disconnect message is a `p2p` reserved
-        // message
+        // 我们不添加功能偏移量，因为断开连接消息是 `p2p` 保留消息
         compressed[0] = buf[0];
 
         self.outgoing_messages.push_back(compressed.into());
@@ -372,18 +355,16 @@ impl<S> P2PStream<S>
 where
     S: Sink<Bytes, Error = io::Error> + Unpin + Send,
 {
-    /// Disconnects the connection by sending a disconnect message.
+    /// 通过发送断开连接消息来断开连接。
     ///
-    /// This future resolves once the disconnect message has been sent and the stream has been
-    /// closed.
+    /// 此 future 在发送完断开连接消息且流关闭后解析。
     pub async fn disconnect(&mut self, reason: DisconnectReason) -> Result<(), P2PStreamError> {
         self.start_disconnect(reason)?;
         self.close().await
     }
 }
 
-// S must also be `Sink` because we need to be able to respond with ping messages to follow the
-// protocol
+// S 也必须是 `Sink`，因为我们需要能够回复 ping 消息以遵循协议
 impl<S> Stream for P2PStream<S>
 where
     S: Stream<Item = io::Result<BytesMut>> + Sink<Bytes, Error = io::Error> + Unpin,
@@ -394,12 +375,11 @@ where
         let this = self.get_mut();
 
         if this.disconnecting {
-            // if disconnecting, stop reading messages
+            // 如果正在断开连接，停止读取消息
             return Poll::Ready(None)
         }
 
-        // we should loop here to ensure we don't return Poll::Pending if we have a message to
-        // return behind any pings we need to respond to
+        // 我们应该在这里循环，以确保如果我们要返回的消息之后还有任何需要响应的 ping，我们不会返回 Poll::Pending
         while let Poll::Ready(res) = this.inner.poll_next_unpin(cx) {
             let bytes = match res {
                 Some(Ok(bytes)) => bytes,
@@ -408,34 +388,26 @@ where
             };
 
             if bytes.is_empty() {
-                // empty messages are not allowed
+                // 不允许空消息
                 return Poll::Ready(Some(Err(P2PStreamError::EmptyProtocolMessage)))
             }
 
-            // first decode disconnect reasons, because they can be encoded in a variety of forms
-            // over the wire, in both snappy compressed and uncompressed forms.
-            //
-            // see: [crate::disconnect::tests::test_decode_known_reasons]
+            // 首先解码断开连接原因，因为它们在线缆上可能以多种形式编码，
+            // 包括经过 snappy 压缩和未压缩的形式。
             let id = bytes[0];
             if id == P2PMessageID::Disconnect as u8 {
-                // We can't handle the error here because disconnect reasons are encoded as both:
-                // * snappy compressed, AND
-                // * uncompressed
-                // over the network.
+                // 我们不能在这里处理错误，因为断开连接原因在网络上编码为：
+                // * snappy 压缩，且
+                // * 未压缩
                 //
-                // If the decoding succeeds, we already checked the id and know this is a
-                // disconnect message, so we can return with the reason.
-                //
-                // If the decoding fails, we continue, and will attempt to decode it again if the
-                // message is snappy compressed. Failure handling in that step is the primary point
-                // where an error is returned if the disconnect reason is malformed.
+                // 如果解码成功，我们已经检查了 ID 并知道这是一个断开连接消息，所以我们可以返回原因。
+                // 如果解码失败，我们继续，如果消息经过 snappy 压缩，我们将尝试再次解码。
                 if let Ok(reason) = DisconnectReason::decode(&mut &bytes[1..]) {
                     return Poll::Ready(Some(Err(P2PStreamError::Disconnected(reason))))
                 }
             }
 
-            // first check that the compressed message length does not exceed the max
-            // payload size
+            // 首先检查压缩消息长度是否超过最大负载大小
             let decompressed_len = snap::raw::decompress_len(&bytes[1..])?;
             if decompressed_len > MAX_PAYLOAD_SIZE {
                 return Poll::Ready(Some(Err(P2PStreamError::MessageTooBig {
@@ -444,12 +416,10 @@ where
                 })))
             }
 
-            // create a buffer to hold the decompressed message, adding a byte to the length for
-            // the message ID byte, which is the first byte in this buffer
+            // 创建一个缓冲区来保存解压缩后的消息，长度增加一个字节用于存放消息 ID
             let mut decompress_buf = BytesMut::zeroed(decompressed_len + 1);
 
-            // each message following a successful handshake is compressed with snappy, so we need
-            // to decompress the message before we can decode it.
+            // 成功握手后的每条消息都经过 snappy 压缩，因此我们需要在解码之前解压消息
             this.decoder.decompress(&bytes[1..], &mut decompress_buf[1..]).map_err(|err| {
                 debug!(
                     %err,
@@ -463,27 +433,22 @@ where
                 _ if id == P2PMessageID::Ping as u8 => {
                     trace!("Received Ping, Sending Pong");
                     this.send_pong();
-                    // This is required because the `Sink` may not be polled externally, and if
-                    // that happens, the pong will never be sent.
+                    // 这是必需的，因为 Sink 可能不会在外部被轮询，如果发生这种情况，pong 将永远不会被发送。
                     cx.waker().wake_by_ref();
                 }
                 _ if id == P2PMessageID::Hello as u8 => {
-                    // we have received a hello message outside of the handshake, so we will return
-                    // an error
+                    // 我们在握手之外收到了 hello 消息，因此返回错误
                     return Poll::Ready(Some(Err(P2PStreamError::HandshakeError(
                         P2PHandshakeError::HelloNotInHandshake,
                     ))))
                 }
                 _ if id == P2PMessageID::Pong as u8 => {
-                    // if we were waiting for a pong, this will reset the pinger state
+                    // 如果我们正在等待 pong，这将重置 pinger 状态
                     this.pinger.on_pong()?
                 }
                 _ if id == P2PMessageID::Disconnect as u8 => {
-                    // At this point, the `decompress_buf` contains the snappy decompressed
-                    // disconnect message.
-                    //
-                    // It's possible we already tried to RLP decode this, but it was snappy
-                    // compressed, so we need to RLP decode it again.
+                    // 此时 decompress_buf 包含经过 snappy 解压的断开连接消息。
+                    // 有可能我们之前尝试过 RLP 解码，但它是经过 snappy 压缩的，所以我们需要再次进行 RLP 解码。
                     let reason = DisconnectReason::decode(&mut &decompress_buf[1..]).inspect_err(|err| {
                         debug!(
                             %err, msg=%hex::encode(&decompress_buf[1..]), "Failed to decode disconnect message from peer"
@@ -492,33 +457,29 @@ where
                     return Poll::Ready(Some(Err(P2PStreamError::Disconnected(reason))))
                 }
                 _ if id > MAX_P2P_MESSAGE_ID && id <= MAX_RESERVED_MESSAGE_ID => {
-                    // we have received an unknown reserved message
+                    // 我们收到了一条未知的保留消息
                     return Poll::Ready(Some(Err(P2PStreamError::UnknownReservedMessageId(id))))
                 }
                 _ => {
-                    // we have received a message that is outside the `p2p` reserved message space,
-                    // so it is a subprotocol message.
+                    // 我们收到了一条处于 `p2p` 保留消息空间之外的消息，因此它是子协议消息。
 
-                    // Peers must be able to identify messages meant for different subprotocols
-                    // using a single message ID byte, and those messages must be distinct from the
-                    // lower-level `p2p` messages.
+                    // 对等方必须能够使用单个消息 ID 字节识别针对不同子协议的消息，
+                    // 并且这些消息必须与底层的 `p2p` 消息区分开来。
                     //
-                    // To ensure that messages for subprotocols are distinct from messages meant
-                    // for the `p2p` capability, message IDs 0x00 - 0x0f are reserved for `p2p`
-                    // messages, so subprotocol messages must have an ID of 0x10 or higher.
+                    // 为确保子协议的消息与针对 `p2p` 功能的消息区分开来，
+                    // 消息 ID 0x00 - 0x0f 被保留给 `p2p` 消息，
+                    // 因此子协议消息的 ID 必须为 0x10 或更高。
                     //
-                    // To ensure that messages for two different capabilities are distinct from
-                    // each other, all shared capabilities are first ordered lexicographically.
-                    // Message IDs are then reserved in this order, starting at 0x10, reserving a
-                    // message ID for each message the capability supports.
+                    // 为确保两个不同功能的消息彼此区分开来，所有共享功能首先按字典序排序。
+                    // 然后按此顺序从 0x10 开始保留消息 ID，为功能支持的每个消息保留一个消息 ID。
                     //
-                    // For example, if the shared capabilities are `eth/67` (containing 10
-                    // messages), and "qrs/65" (containing 8 messages):
+                    // 例如，如果共享功能是 `eth/67` (包含 10 条消息) 和 "qrs/65" (包含 8 条消息):
                     //
-                    //  * The special case of `p2p`: `p2p` is reserved message IDs 0x00 - 0x0f.
-                    //  * `eth/67` is reserved message IDs 0x10 - 0x19.
-                    //  * `qrs/65` is reserved message IDs 0x1a - 0x21.
+                    //  * `p2p` 的特殊情况：`p2p` 保留消息 ID 0x00 - 0x0f。
+                    //  * `eth/67` 保留消息 ID 0x10 - 0x19。
+                    //  * `qrs/65` 保留消息 ID 0x1a - 0x21。
                     //
+                    // 这里我们将 ID 重新映射到从 0 开始，通过减去保留范围的长度。
                     decompress_buf[0] = bytes[0] - MAX_RESERVED_MESSAGE_ID - 1;
 
                     return Poll::Ready(Some(Ok(decompress_buf)))
@@ -539,17 +500,17 @@ where
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut this = self.as_mut();
 
-        // poll the pinger to determine if we should send a ping
+        // 轮询 pinger 以确定是否应发送 ping
         match this.pinger.poll_ping(cx) {
             Poll::Pending => {}
             Poll::Ready(Ok(PingerEvent::Ping)) => {
                 this.send_ping();
             }
             _ => {
-                // encode the disconnect message
+                // 编码断开连接消息
                 this.start_disconnect(DisconnectReason::PingTimeout)?;
 
-                // End the stream after ping related error
+                // ping 相关错误后结束流
                 return Poll::Ready(Ok(()))
             }
         }
@@ -566,7 +527,7 @@ where
         }
 
         if self.has_outgoing_capacity() {
-            // still has capacity
+            // 仍有容量
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -582,11 +543,11 @@ where
         }
 
         if item.is_empty() {
-            // empty messages are not allowed
+            // 不允许空消息
             return Err(P2PStreamError::EmptyProtocolMessage)
         }
 
-        // ensure we have free capacity
+        // 确保有空闲容量
         if !self.has_outgoing_capacity() {
             return Err(P2PStreamError::SendBufferFull)
         }
@@ -604,19 +565,17 @@ where
                 err
             })?;
 
-        // truncate the compressed buffer to the actual compressed size (plus one for the message
-        // id)
+        // 将压缩缓冲区截断为实际压缩大小 (加上消息 ID 的一个字节)
         compressed.truncate(compressed_size + 1);
 
-        // all messages sent in this stream are subprotocol messages, so we need to switch the
-        // message id based on the offset
+        // 此流中发送的所有消息都是子协议消息，因此我们需要根据偏移量切换消息 ID
         compressed[0] = item[0] + MAX_RESERVED_MESSAGE_ID + 1;
         this.outgoing_messages.push_back(compressed.freeze());
 
         Ok(())
     }
 
-    /// Returns `Poll::Ready(Ok(()))` when no buffered items remain.
+    /// 当没有保留的缓冲项时返回 `Poll::Ready(Ok(()))`。
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut this = self.project();
         let poll_res = loop {
@@ -647,28 +606,27 @@ where
     }
 }
 
-/// This represents only the reserved `p2p` subprotocol messages.
+/// 仅表示保留的 `p2p` 子协议消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[add_arbitrary_tests(rlp)]
 pub enum P2PMessage {
-    /// The first packet sent over the connection, and sent once by both sides.
+    /// 连接上发送的第一个数据包，双方各发送一次。
     Hello(HelloMessage),
 
-    /// Inform the peer that a disconnection is imminent; if received, a peer should disconnect
-    /// immediately.
+    /// 通知对等方即将断开连接；如果收到，对等方应立即断开连接。
     Disconnect(DisconnectReason),
 
-    /// Requests an immediate reply of [`P2PMessage::Pong`] from the peer.
+    /// 请求对等方立即回复 [`P2PMessage::Pong`]。
     Ping,
 
-    /// Reply to the peer's [`P2PMessage::Ping`] packet.
+    /// 回复对等方的 [`P2PMessage::Ping`] 数据包。
     Pong,
 }
 
 impl P2PMessage {
-    /// Gets the [`P2PMessageID`] for the given message.
+    /// 获取给定消息的 [`P2PMessageID`]。
     pub const fn message_id(&self) -> P2PMessageID {
         match self {
             Self::Hello(_) => P2PMessageID::Hello,
@@ -680,23 +638,22 @@ impl P2PMessage {
 }
 
 impl Encodable for P2PMessage {
-    /// The [`Encodable`] implementation for [`P2PMessage::Ping`] and [`P2PMessage::Pong`] encodes
-    /// the message as RLP, and prepends a snappy header to the RLP bytes for all variants except
-    /// the [`P2PMessage::Hello`] variant, because the hello message is never compressed in the
-    /// `p2p` subprotocol.
+    /// [`P2PMessage::Ping`] 和 [`P2PMessage::Pong`] 的 [`Encodable`] 实现将消息编码为 RLP，
+    /// 并在 RLP 字节前添加 snappy 报头。除 [`P2PMessage::Hello`] 外的所有变体均如此，
+    /// 因为 hello 消息在 `p2p` 子协议中从不压缩。
     fn encode(&self, out: &mut dyn BufMut) {
         (self.message_id() as u8).encode(out);
         match self {
             Self::Hello(msg) => msg.encode(out),
             Self::Disconnect(msg) => msg.encode(out),
             Self::Ping => {
-                // Ping payload is _always_ snappy encoded
+                // Ping 负载总是 snappy 编码的
                 out.put_u8(0x01);
                 out.put_u8(0x00);
                 out.put_u8(EMPTY_LIST_CODE);
             }
             Self::Pong => {
-                // Pong payload is _always_ snappy encoded
+                // Pong 负载总是 snappy 编码的
                 out.put_u8(0x01);
                 out.put_u8(0x00);
                 out.put_u8(EMPTY_LIST_CODE);
@@ -708,22 +665,21 @@ impl Encodable for P2PMessage {
         let payload_len = match self {
             Self::Hello(msg) => msg.length(),
             Self::Disconnect(msg) => msg.length(),
-            // id + snappy encoded payload
+            // id + snappy 编码的负载
             Self::Ping | Self::Pong => 3, // len([0x01, 0x00, 0xc0]) = 3
         };
-        payload_len + 1 // (1 for length of p2p message id)
+        payload_len + 1 // (1 用于 p2p 消息 ID 的长度)
     }
 }
 
 impl Decodable for P2PMessage {
-    /// The [`Decodable`] implementation for [`P2PMessage`] assumes that each of the message
-    /// variants are snappy compressed, except for the [`P2PMessage::Hello`] variant since the
-    /// hello message is never compressed in the `p2p` subprotocol.
+    /// [`P2PMessage`] 的 [`Decodable`] 实现假定每个消息变体都经过了 snappy 压缩，
+    /// 但 [`P2PMessage::Hello`] 变体除外，因为 hello 消息在 `p2p` 子协议中从不压缩。
     ///
-    /// The [`Decodable`] implementation for [`P2PMessage::Ping`] and [`P2PMessage::Pong`] expects
-    /// a snappy encoded payload, see [`Encodable`] implementation.
+    /// [`P2PMessage::Ping`] 和 [`P2PMessage::Pong`] 的 [`Decodable`] 实现预期有一个 snappy 编码的负载，
+    /// 参见 [`Encodable`] 实现。
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        /// Removes the snappy prefix from the Ping/Pong buffer
+        /// 从 Ping/Pong 缓冲区移除 snappy 前缀
         fn advance_snappy_ping_pong_payload(buf: &mut &[u8]) -> alloy_rlp::Result<()> {
             if buf.len() < 3 {
                 return Err(RlpError::InputTooShort)
@@ -754,19 +710,19 @@ impl Decodable for P2PMessage {
     }
 }
 
-/// Message IDs for `p2p` subprotocol messages.
+/// `p2p` 子协议消息的消息 ID。
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum P2PMessageID {
-    /// Message ID for the [`P2PMessage::Hello`] message.
+    /// [`P2PMessage::Hello`] 消息的消息 ID。
     Hello = 0x00,
 
-    /// Message ID for the [`P2PMessage::Disconnect`] message.
+    /// [`P2PMessage::Disconnect`] 消息的消息 ID。
     Disconnect = 0x01,
 
-    /// Message ID for the [`P2PMessage::Ping`] message.
+    /// [`P2PMessage::Ping`] 消息的消息 ID。
     Ping = 0x02,
 
-    /// Message ID for the [`P2PMessage::Pong`] message.
+    /// [`P2PMessage::Pong`] 消息的消息 ID。
     Pong = 0x03,
 }
 

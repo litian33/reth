@@ -1,4 +1,7 @@
 //! Customizable node builder.
+//!
+//! 中文说明：这是一个“节点构建器（builder）”模块，用于以声明式/链式方式组合并启动 reth 节点的各类组件
+//! （数据库、交易池、网络、payload builder、RPC 等）。
 
 #![allow(clippy::type_complexity, missing_debug_implementations)]
 
@@ -47,6 +50,8 @@ mod states;
 pub use states::*;
 
 /// The adapter type for a reth node with the builtin provider type
+///
+/// 中文说明：使用内置 `BlockchainProvider` 时的默认类型适配器别名。
 // Note: we need to hardcode this because custom components might depend on it in associated types.
 pub type RethFullAdapter<DB, Types> =
     FullNodeTypesAdapter<Types, DB, BlockchainProvider<NodeTypesWithDBAdapter<Types, DB>>>;
@@ -55,10 +60,13 @@ pub type RethFullAdapter<DB, Types> =
 #[cfg_attr(doc, aquamarine::aquamarine)]
 /// Declaratively construct a node.
 ///
+/// 中文说明：以声明式方式构建节点——通过一系列 builder 状态推进（types -> components -> add-ons -> launch），
+/// 在编译期用类型系统确保“配置顺序正确、组件类型匹配”。
+///
 /// [`NodeBuilder`] provides a [builder-like interface][builder] for composing
 /// components of a node.
 ///
-/// ## Order
+/// ## Order（配置顺序）
 ///
 /// Configuring a node starts out with a [`NodeConfig`] (this can be obtained from cli arguments for
 /// example) and then proceeds to configure the core static types of the node:
@@ -83,7 +91,7 @@ pub type RethFullAdapter<DB, Types> =
 ///
 /// The [`NodeBuilder::node`] function configures the node's types and components in one step.
 ///
-/// ## Components
+/// ## Components（组件）
 ///
 /// All components are configured with a [`NodeComponentsBuilder`] that is responsible for actually
 /// creating the node components during the launch process. The
@@ -97,7 +105,7 @@ pub type RethFullAdapter<DB, Types> =
 /// that gives access to internals of the that are needed to configure the components. This include
 /// the original config, chain spec, the database provider and the task executor,
 ///
-/// ## Hooks
+/// ## Hooks（钩子）
 ///
 /// Once all the components are configured, the builder can be used to set hooks that are run at
 /// specific points in the node's lifecycle. This way custom services can be spawned before the node
@@ -107,7 +115,7 @@ pub type RethFullAdapter<DB, Types> =
 /// the rpc server before it is launched. See also [`RpcContext`] All hooks accept a closure that is
 /// then invoked at the appropriate time in the node's launch process.
 ///
-/// ## Flow
+/// ## Flow（流程）
 ///
 /// The [`NodeBuilder`] is intended to sit behind a CLI that provides the necessary [`NodeConfig`]
 /// input: [`NodeBuilder::new`]
@@ -127,7 +135,7 @@ pub type RethFullAdapter<DB, Types> =
 ///
 /// include_mmd!("docs/mermaid/builder.mmd")
 ///
-/// ## Internals
+/// ## Internals（内部实现）
 ///
 /// The node builder is fully type safe, it uses the [`NodeTypes`] trait to enforce that
 /// all components are configured with the correct types. However the database types and with that
@@ -142,7 +150,7 @@ pub type RethFullAdapter<DB, Types> =
 /// all the components of the node. Internally the node builder uses several generic adapter types
 /// that are then map to traits with associated types for ease of use.
 ///
-/// ### Limitations
+/// ### Limitations（限制）
 ///
 /// Currently the launch process is limited to ethereum nodes and requires all the components
 /// specified above. It also expects beacon consensus with the ethereum engine API that is
@@ -151,13 +159,19 @@ pub type RethFullAdapter<DB, Types> =
 /// [builder]: https://doc.rust-lang.org/1.0.0/style/ownership/builders.html
 pub struct NodeBuilder<DB, ChainSpec> {
     /// All settings for how the node should be configured.
+    ///
+    /// 中文说明：节点的整体配置（通常来自 CLI 参数 + `reth.toml`）。
     config: NodeConfig<ChainSpec>,
     /// The configured database for the node.
+    ///
+    /// 中文说明：节点使用的数据库实例/句柄（可注入自定义实现）。
     database: DB,
 }
 
 impl<ChainSpec> NodeBuilder<(), ChainSpec> {
     /// Create a new [`NodeBuilder`].
+    ///
+    /// 中文说明：创建一个尚未绑定数据库的 builder（数据库默认为 `()`），后续可用 `with_database` 注入。
     pub const fn new(config: NodeConfig<ChainSpec>) -> Self {
         Self { config, database: () }
     }
@@ -227,6 +241,8 @@ impl<DB, ChainSpec> NodeBuilder<DB, ChainSpec> {
 
 impl<DB, ChainSpec: EthChainSpec> NodeBuilder<DB, ChainSpec> {
     /// Configures the underlying database that the node will use.
+    ///
+    /// 中文说明：设置节点将使用的数据库实现。
     pub fn with_database<D>(self, database: D) -> NodeBuilder<D, ChainSpec> {
         NodeBuilder { config: self.config, database }
     }
@@ -234,6 +250,8 @@ impl<DB, ChainSpec: EthChainSpec> NodeBuilder<DB, ChainSpec> {
     /// Preconfigure the builder with the context to launch the node.
     ///
     /// This provides the task executor and the data directory for the node.
+    ///
+    /// 中文说明：注入启动上下文（任务执行器等）；进入可 `launch` 的阶段。
     pub const fn with_launch_context(self, task_executor: TaskExecutor) -> WithLaunchContext<Self> {
         WithLaunchContext { builder: self, task_executor }
     }
@@ -301,6 +319,8 @@ where
     /// Preconfigures the node with a specific node implementation.
     ///
     /// This is a convenience method that sets the node's types and components in one call.
+    ///
+    /// 中文说明：快捷方法——一次性选择 `Node` 实现，并自动配置其 types/components/add-ons。
     pub fn node<N>(
         self,
         node: N,
@@ -316,6 +336,8 @@ where
 ///
 /// This exposes the same methods as [`NodeBuilder`] but with the launch context already configured,
 /// See [`WithLaunchContext::launch`]
+///
+/// 中文说明：带启动上下文（`TaskExecutor` 等）的 builder 包装器，便于直接进入组件配置/启动流程。
 pub struct WithLaunchContext<Builder> {
     builder: Builder,
     task_executor: TaskExecutor,
@@ -455,11 +477,15 @@ where
     AO: RethRpcAddOns<NodeAdapter<T, CB::Components>>,
 {
     /// Returns a reference to the node builder's config.
+    ///
+    /// 中文说明：读取节点配置（只读）。
     pub const fn config(&self) -> &NodeConfig<<T::Types as NodeTypes>::ChainSpec> {
         &self.builder.config
     }
 
     /// Returns a mutable reference to the node builder's config.
+    ///
+    /// 中文说明：可变访问节点配置（用于在启动前做最后的细节调整）。
     pub const fn config_mut(&mut self) -> &mut NodeConfig<<T::Types as NodeTypes>::ChainSpec> {
         &mut self.builder.config
     }
@@ -679,6 +705,8 @@ where
     }
 
     /// Launches the node with the [`EngineNodeLauncher`] that sets up engine API consensus and rpc
+    ///
+    /// 中文说明：使用默认 `EngineNodeLauncher` 启动节点（包含 engine API 共识 + RPC 启动流程）。
     pub async fn launch(
         self,
     ) -> eyre::Result<<EngineNodeLauncher as LaunchNode<NodeBuilderWithComponents<T, CB, AO>>>::Node>
@@ -709,6 +737,7 @@ where
             builder.config.datadir(),
             engine_tree_config,
         ));
+        // run step 008
         builder.launch_with(launcher)
     }
 
@@ -725,14 +754,24 @@ where
 }
 
 /// Captures the necessary context for building the components of the node.
+///
+/// 中文说明：构建组件所需的“上下文快照”，包含 head/provider/executor 以及配置容器等。
 pub struct BuilderContext<Node: FullNodeTypes> {
     /// The current head of the blockchain at launch.
+    ///
+    /// 中文说明：启动时链的 head（区块高度/哈希等）。
     pub(crate) head: Head,
     /// The configured provider to interact with the blockchain.
+    ///
+    /// 中文说明：与链交互的 provider（读写区块/状态等）。
     pub(crate) provider: Node::Provider,
     /// The executor of the node.
+    ///
+    /// 中文说明：任务执行器（用于 spawn 异步/阻塞任务）。
     pub(crate) executor: TaskExecutor,
     /// Config container
+    ///
+    /// 中文说明：配置容器（含 CLI 配置与从 `reth.toml` 加载的配置）。
     pub(crate) config_container: WithConfigs<<Node::Types as NodeTypes>::ChainSpec>,
 }
 
@@ -808,6 +847,8 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
     ///
     /// Spawns the configured network and associated tasks and returns the [`NetworkHandle`]
     /// connected to that network.
+    ///
+    /// 中文说明：启动网络相关任务（p2p 网络、txpool、eth 请求处理等），并返回可交互的 `NetworkHandle`。
     pub fn start_network<N, Pool>(
         &self,
         builder: NetworkBuilder<(), (), N>,
@@ -839,6 +880,8 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
     ///
     /// Spawns the configured network and associated tasks and returns the [`NetworkHandle`]
     /// connected to that network.
+    ///
+    /// 中文说明：与 `start_network` 类似，但允许指定交易管理器配置与传播策略；公告过滤使用默认严格策略。
     pub fn start_network_with<Pool, N, Policy>(
         &self,
         builder: NetworkBuilder<(), (), N>,
@@ -875,6 +918,8 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
     ///
     /// Spawns the configured network and associated tasks and returns the [`NetworkHandle`]
     /// connected to that network.
+    ///
+    /// 中文说明：完全自定义（传播策略 + 公告过滤策略），适合对 “接受哪些交易类型/公告” 有特殊需求的场景。
     pub fn start_network_with_policies<Pool, N, PropPolicy, AnnPolicy>(
         &self,
         builder: NetworkBuilder<(), (), N>,
@@ -913,6 +958,7 @@ impl<Node: FullNodeTypes> BuilderContext<Node> {
                     if let Some(peers_file) = known_peers_file {
                         let num_known_peers = network.num_known_peers();
                         trace!(target: "reth::cli", peers_file=?peers_file, num_peers=%num_known_peers, "Saving current peers");
+                        // 中文说明：节点优雅退出时，将当前已知 peers 写入文件，便于下次启动快速恢复连接。
                         match network.write_peers_to_file(peers_file.as_path()) {
                             Ok(_) => {
                                 info!(target: "reth::cli", peers_file=?peers_file, "Wrote network peers to file");

@@ -1,4 +1,4 @@
-//! A tokio based CLI runner.
+//! 一个基于 tokio 的 CLI 运行器。
 
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
@@ -8,42 +8,43 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! Entrypoint for running commands.
+//! 运行命令的入口点。
 
 use reth_tasks::{TaskExecutor, TaskManager};
 use std::{future::Future, pin::pin, sync::mpsc, time::Duration};
 use tracing::{debug, error, trace};
 
-/// Executes CLI commands.
+/// 执行 CLI 命令。
 ///
-/// Provides utilities for running a cli command to completion.
+/// 提供运行 CLI 命令直至完成的工具。
 #[derive(Debug)]
 pub struct CliRunner {
+    /// 运行器的配置选项。
     config: CliRunnerConfig,
+    /// 用于执行异步任务的 tokio 运行时。
     tokio_runtime: tokio::runtime::Runtime,
 }
 
 impl CliRunner {
-    /// Attempts to create a new [`CliRunner`] using the default tokio
-    /// [`Runtime`](tokio::runtime::Runtime).
+    /// 尝试使用默认的 tokio [`Runtime`](tokio::runtime::Runtime) 创建一个新的 [`CliRunner`]。
     ///
-    /// The default tokio runtime is multi-threaded, with both I/O and time drivers enabled.
+    /// 默认的 tokio 运行时是多线程的，并启用了 I/O 和时间驱动。
     pub fn try_default_runtime() -> Result<Self, std::io::Error> {
         Ok(Self { config: CliRunnerConfig::default(), tokio_runtime: tokio_runtime()? })
     }
 
-    /// Create a new [`CliRunner`] from a provided tokio [`Runtime`](tokio::runtime::Runtime).
+    /// 从提供的 tokio [`Runtime`](tokio::runtime::Runtime) 创建一个新的 [`CliRunner`]。
     pub const fn from_runtime(tokio_runtime: tokio::runtime::Runtime) -> Self {
         Self { config: CliRunnerConfig::new(), tokio_runtime }
     }
 
-    /// Sets the [`CliRunnerConfig`] for this runner.
+    /// 为此运行器设置 [`CliRunnerConfig`]。
     pub const fn with_config(mut self, config: CliRunnerConfig) -> Self {
         self.config = config;
         self
     }
 
-    /// Executes an async block on the runtime and blocks until completion.
+    /// 在运行时执行一个异步代码块并阻塞直到完成。
     pub fn block_on<F, T>(&self, fut: F) -> T
     where
         F: Future<Output = T>,
@@ -51,11 +52,11 @@ impl CliRunner {
         self.tokio_runtime.block_on(fut)
     }
 
-    /// Executes the given _async_ command on the tokio runtime until the command future resolves or
-    /// until the process receives a `SIGINT` or `SIGTERM` signal.
+    /// 在 tokio 运行时执行给定的 _异步_ 命令，直到命令 future 解析，
+    /// 或直到进程收到 `SIGINT` (Ctrl+C) 或 `SIGTERM` 信号。
     ///
-    /// Tasks spawned by the command via the [`TaskExecutor`] are shut down and an attempt is made
-    /// to drive their shutdown to completion after the command has finished.
+    /// 命令通过 [`TaskExecutor`] 派生的任务将被关闭，
+    /// 并在命令结束后尝试驱动它们完成关闭。
     pub fn run_command_until_exit<F, E>(
         self,
         command: impl FnOnce(CliContext) -> F,
@@ -67,26 +68,23 @@ impl CliRunner {
         let AsyncCliRunner { context, mut task_manager, tokio_runtime } =
             AsyncCliRunner::new(self.tokio_runtime);
 
-        // Executes the command until it finished or ctrl-c was fired
+        // 执行命令直到完成或触发 Ctrl-C
         let command_res = tokio_runtime.block_on(run_to_completion_or_panic(
             &mut task_manager,
             run_until_ctrl_c(command(context)),
         ));
 
         if command_res.is_err() {
-            error!(target: "reth::cli", "shutting down due to error");
+            error!(target: "reth::cli", "由于错误正在关闭");
         } else {
-            debug!(target: "reth::cli", "shutting down gracefully");
-            // after the command has finished or exit signal was received we shutdown the task
-            // manager which fires the shutdown signal to all tasks spawned via the task
-            // executor and awaiting on tasks spawned with graceful shutdown
+            debug!(target: "reth::cli", "正在优雅关闭");
+            // 命令完成后或收到退出信号后，我们关闭任务管理器，
+            // 它会向所有通过任务执行器派生的任务发出关闭信号，并等待带有优雅关闭的任务。
             task_manager.graceful_shutdown_with_timeout(self.config.graceful_shutdown_timeout);
         }
 
-        // `drop(tokio_runtime)` would block the current thread until its pools
-        // (including blocking pool) are shutdown. Since we want to exit as soon as possible, drop
-        // it on a separate thread and wait for up to 5 seconds for this operation to
-        // complete.
+        // `drop(tokio_runtime)` 会阻塞当前线程，直到其线程池（包括阻塞池）关闭。
+        // 由于我们希望尽快退出，因此在单独的线程上将其 drop，并等待最多 5 秒以完成此操作。
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("tokio-runtime-shutdown".to_string())
@@ -97,15 +95,15 @@ impl CliRunner {
             .unwrap();
 
         let _ = rx.recv_timeout(Duration::from_secs(5)).inspect_err(|err| {
-            debug!(target: "reth::cli", %err, "tokio runtime shutdown timed out");
+            debug!(target: "reth::cli", %err, "tokio 运行时关闭超时");
         });
 
         command_res
     }
 
-    /// Executes a command in a blocking context with access to `CliContext`.
+    /// 在阻塞上下文中执行命令，并允许访问 `CliContext`。
     ///
-    /// See [`Runtime::spawn_blocking`](tokio::runtime::Runtime::spawn_blocking).
+    /// 参见 [`Runtime::spawn_blocking`](tokio::runtime::Runtime::spawn_blocking)。
     pub fn run_blocking_command_until_exit<F, E>(
         self,
         command: impl FnOnce(CliContext) -> F + Send + 'static,
@@ -117,27 +115,27 @@ impl CliRunner {
         let AsyncCliRunner { context, mut task_manager, tokio_runtime } =
             AsyncCliRunner::new(self.tokio_runtime);
 
-        // Spawn the command on the blocking thread pool
+        // 在阻塞线程池上启动命令
         let handle = tokio_runtime.handle().clone();
         let command_handle =
             tokio_runtime.handle().spawn_blocking(move || handle.block_on(command(context)));
 
-        // Wait for the command to complete or ctrl-c
+        // 等待命令完成或收到 Ctrl-C
         let command_res = tokio_runtime.block_on(run_to_completion_or_panic(
             &mut task_manager,
             run_until_ctrl_c(
-                async move { command_handle.await.expect("Failed to join blocking task") },
+                async move { command_handle.await.expect("无法加入阻塞任务") },
             ),
         ));
 
         if command_res.is_err() {
-            error!(target: "reth::cli", "shutting down due to error");
+            error!(target: "reth::cli", "由于错误正在关闭");
         } else {
-            debug!(target: "reth::cli", "shutting down gracefully");
+            debug!(target: "reth::cli", "正在优雅关闭");
             task_manager.graceful_shutdown_with_timeout(self.config.graceful_shutdown_timeout);
         }
 
-        // Shutdown the runtime on a separate thread
+        // 在单独的线程上关闭运行时
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("tokio-runtime-shutdown".to_string())
@@ -148,13 +146,13 @@ impl CliRunner {
             .unwrap();
 
         let _ = rx.recv_timeout(Duration::from_secs(5)).inspect_err(|err| {
-            debug!(target: "reth::cli", %err, "tokio runtime shutdown timed out");
+            debug!(target: "reth::cli", %err, "tokio 运行时关闭超时");
         });
 
         command_res
     }
 
-    /// Executes a regular future until completion or until external signal received.
+    /// 执行一个常规 future，直到完成或收到外部信号。
     pub fn run_until_ctrl_c<F, E>(self, fut: F) -> Result<(), E>
     where
         F: Future<Output = Result<(), E>>,
@@ -164,10 +162,9 @@ impl CliRunner {
         Ok(())
     }
 
-    /// Executes a regular future as a spawned blocking task until completion or until external
-    /// signal received.
+    /// 在派生的阻塞任务中执行常规 future，直到完成或收到外部信号。
     ///
-    /// See [`Runtime::spawn_blocking`](tokio::runtime::Runtime::spawn_blocking) .
+    /// 参见 [`Runtime::spawn_blocking`](tokio::runtime::Runtime::spawn_blocking)。
     pub fn run_blocking_until_ctrl_c<F, E>(self, fut: F) -> Result<(), E>
     where
         F: Future<Output = Result<(), E>> + Send + 'static,
@@ -177,11 +174,10 @@ impl CliRunner {
         let handle = tokio_runtime.handle().clone();
         let fut = tokio_runtime.handle().spawn_blocking(move || handle.block_on(fut));
         tokio_runtime
-            .block_on(run_until_ctrl_c(async move { fut.await.expect("Failed to join task") }))?;
+            .block_on(run_until_ctrl_c(async move { fut.await.expect("无法加入任务") }))?;
 
-        // drop the tokio runtime on a separate thread because drop blocks until its pools
-        // (including blocking pool) are shutdown. In other words `drop(tokio_runtime)` would block
-        // the current thread but we want to exit right away.
+        // 在单独的线程上 drop tokio 运行时，因为 drop 会阻塞直到其线程池（包括阻塞池）关闭。
+        // 换句话说，`drop(tokio_runtime)` 会阻塞当前线程，但我们希望立即退出。
         std::thread::Builder::new()
             .name("tokio-runtime-shutdown".to_string())
             .spawn(move || drop(tokio_runtime))
@@ -191,18 +187,20 @@ impl CliRunner {
     }
 }
 
-/// [`CliRunner`] configuration when executing commands asynchronously
+/// 异步执行命令时的 [`CliRunner`] 配置。
 struct AsyncCliRunner {
+    /// 提供给命令的 CLI 上下文。
     context: CliContext,
+    /// 负责管理派生任务生命周期的管理器。
     task_manager: TaskManager,
+    /// 用于执行任务的 tokio 运行时。
     tokio_runtime: tokio::runtime::Runtime,
 }
 
 // === impl AsyncCliRunner ===
 
 impl AsyncCliRunner {
-    /// Given a tokio [`Runtime`](tokio::runtime::Runtime), creates additional context required to
-    /// execute commands asynchronously.
+    /// 给定一个 tokio [`Runtime`](tokio::runtime::Runtime)，创建异步执行命令所需的额外上下文。
     fn new(tokio_runtime: tokio::runtime::Runtime) -> Self {
         let task_manager = TaskManager::new(tokio_runtime.handle().clone());
         let task_executor = task_manager.executor();
@@ -210,23 +208,22 @@ impl AsyncCliRunner {
     }
 }
 
-/// Additional context provided by the [`CliRunner`] when executing commands
+/// 执行命令时由 [`CliRunner`] 提供的额外上下文。
 #[derive(Debug)]
 pub struct CliContext {
-    /// Used to execute/spawn tasks
+    /// 用于执行/派生任务的任务执行器。
     pub task_executor: TaskExecutor,
 }
 
-/// Default timeout for graceful shutdown of tasks.
+/// 任务优雅关闭的默认超时时间。
 const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Configuration for [`CliRunner`].
+/// [`CliRunner`] 的配置。
 #[derive(Debug, Clone)]
 pub struct CliRunnerConfig {
-    /// Timeout for graceful shutdown of tasks.
+    /// 任务优雅关闭的超时时间。
     ///
-    /// After the command completes, this is the maximum time to wait for spawned tasks
-    /// to finish before forcefully terminating them.
+    /// 命令完成后，这是在强制终止之前等待派生任务完成的最大时间。
     pub graceful_shutdown_timeout: Duration,
 }
 
@@ -237,27 +234,26 @@ impl Default for CliRunnerConfig {
 }
 
 impl CliRunnerConfig {
-    /// Creates a new config with default values.
+    /// 使用默认值创建一个新配置。
     pub const fn new() -> Self {
         Self { graceful_shutdown_timeout: DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT }
     }
 
-    /// Sets the graceful shutdown timeout.
+    /// 设置优雅关闭超时时间。
     pub const fn with_graceful_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.graceful_shutdown_timeout = timeout;
         self
     }
 }
 
-/// Creates a new default tokio multi-thread [Runtime](tokio::runtime::Runtime) with all features
-/// enabled
+/// 创建一个新的默认 tokio 多线程 [Runtime](tokio::runtime::Runtime)，并启用所有功能。
 pub fn tokio_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build()
 }
 
-/// Runs the given future to completion or until a critical task panicked.
+/// 运行给定的 future 直至完成，或者直到关键任务发生 panic。
 ///
-/// Returns the error if a task panicked, or the given future returned an error.
+/// 如果任务发生 panic，或者给定的 future 返回错误，则返回错误。
 async fn run_to_completion_or_panic<F, E>(tasks: &mut TaskManager, fut: F) -> Result<(), E>
 where
     F: Future<Output = Result<(), E>>,
@@ -277,9 +273,9 @@ where
     Ok(())
 }
 
-/// Runs the future to completion or until:
-/// - `ctrl-c` is received.
-/// - `SIGTERM` is received (unix only).
+/// 运行 future 直至完成，或者直到：
+/// - 收到 `ctrl-c`。
+/// - 收到 `SIGTERM`（仅限 unix）。
 async fn run_until_ctrl_c<F, E>(fut: F) -> Result<(), E>
 where
     F: Future<Output = Result<(), E>>,
@@ -297,10 +293,10 @@ where
 
         tokio::select! {
             _ = ctrl_c => {
-                trace!(target: "reth::cli", "Received ctrl-c");
+                trace!(target: "reth::cli", "收到 Ctrl-C");
             },
             _ = sigterm => {
-                trace!(target: "reth::cli", "Received SIGTERM");
+                trace!(target: "reth::cli", "收到 SIGTERM");
             },
             res = fut => res?,
         }
@@ -313,7 +309,7 @@ where
 
         tokio::select! {
             _ = ctrl_c => {
-                trace!(target: "reth::cli", "Received ctrl-c");
+                trace!(target: "reth::cli", "收到 Ctrl-C");
             },
             res = fut => res?,
         }

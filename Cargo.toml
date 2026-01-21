@@ -315,6 +315,12 @@ too_long_first_doc_paragraph = "allow"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
+[profile.vscode-debug]
+inherits = "dev"
+debug = 2
+split-debuginfo = "off"
+opt-level = 0
+
 # Speed up tests.
 [profile.dev.package]
 # 对某些依赖单独提高优化等级（加速 tests），避免整个 workspace dev 都开 O3 导致编译变慢。

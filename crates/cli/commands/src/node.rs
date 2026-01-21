@@ -202,10 +202,12 @@ where
             node_config = node_config.with_unused_ports();
         }
 
+        //  创建 NodeBuilder 并挂上 task_executor
         let builder = NodeBuilder::new(node_config)
             .with_database(database)
             .with_launch_context(ctx.task_executor);
 
+        // run step 007
         launcher.entrypoint(builder, ext).await
     }
 }

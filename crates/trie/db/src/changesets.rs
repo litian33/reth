@@ -1,11 +1,10 @@
-//! Trie changeset computation and caching utilities.
+//! Trie changeset 的计算与缓存工具。
 //!
-//! This module provides functionality to compute trie changesets for a given block,
-//! which represent the old trie node values before the block was processed.
+//! 本模块提供按区块计算 trie changeset 的能力：changeset 表示“该区块被处理之前”的 trie 节点旧值。
 //!
-//! It also provides an efficient in-memory cache for these changesets, which is essential for:
-//! - **Reorg support**: Quickly access changesets to revert blocks during chain reorganizations
-//! - **Memory efficiency**: Automatic eviction ensures bounded memory usage
+//! 同时提供一个高效的内存缓存，用于保存这些 changeset，主要用于：
+//! - **重组（reorg）支持**：链发生重组时，可快速获取 changeset 以回滚区块
+//! - **内存效率**：通过驱逐（eviction）机制控制内存占用上限
 
 use crate::{DatabaseHashedPostState, DatabaseStateRoot, DatabaseTrieCursorFactory};
 use alloy_primitives::{map::B256Map, BlockNumber, B256};
@@ -32,34 +31,34 @@ use reth_metrics::{
     Metrics,
 };
 
-/// Computes trie changesets for a block.
+/// 计算指定区块的 trie changeset。
 ///
-/// # Algorithm
+/// # 算法
 ///
-/// For block N:
-/// 1. Query cumulative `HashedPostState` revert for block N-1 (from db tip to after N-1)
-/// 2. Use that to calculate cumulative `TrieUpdates` revert for block N-1
-/// 3. Query per-block `HashedPostState` revert for block N
-/// 4. Create prefix sets from the per-block revert (step 3)
-/// 5. Create overlay with cumulative trie updates and cumulative state revert for N-1
-/// 6. Calculate trie updates for block N using the overlay and per-block `HashedPostState`.
-/// 7. Compute changesets using the N-1 overlay and the newly calculated trie updates for N
+/// 对区块 N：
+/// 1. 查询区块 N-1 的累积 `HashedPostState` revert（从 db tip 回滚到“处理完 N-1 之后”的状态）
+/// 2. 基于该 revert 计算区块 N-1 的累积 `TrieUpdates` revert
+/// 3. 查询区块 N 的逐块（per-block）`HashedPostState` revert
+/// 4. 基于第 3 步的逐块 revert 构建 prefix sets
+/// 5. 使用区块 N-1 的“累积 trie updates + 累积 state revert”创建 overlay
+/// 6. 使用 overlay 与区块 N 的逐块 `HashedPostState` 计算区块 N 的 trie updates
+/// 7. 使用区块 N-1 的 overlay + 第 6 步得到的 trie updates 计算 changeset
 ///
-/// # Arguments
+/// # 参数
 ///
-/// * `provider` - Database provider with changeset access
-/// * `block_number` - Block number to compute changesets for
+/// * `provider` - 可访问 changeset 的数据库 provider
+/// * `block_number` - 需要计算 changeset 的区块号
 ///
-/// # Returns
+/// # 返回值
 ///
-/// Changesets (old trie node values) for the specified block
+/// 指定区块的 changeset（trie 节点旧值）
 ///
-/// # Errors
+/// # 错误
 ///
-/// Returns error if:
-/// - Block number exceeds database tip (based on Finish stage checkpoint)
-/// - Database access fails
-/// - State root computation fails
+/// 可能返回错误的情况：
+/// - 区块号超过数据库 tip（基于 Finish stage checkpoint）
+/// - 数据库访问失败
+/// - state root 计算失败
 pub fn compute_block_trie_changesets<Provider>(
     provider: &Provider,
     block_number: BlockNumber,
@@ -73,24 +72,24 @@ where
         "Computing block trie changesets from database state"
     );
 
-    // Step 1: Collect/calculate state reverts
+    // 第 1 步：收集/计算 state reverts
 
-    // This is just the changes from this specific block
+    // 仅包含该区块自身的变更
     let individual_state_revert = HashedPostStateSorted::from_reverts::<KeccakKeyHasher>(
         provider,
         block_number..=block_number,
     )?;
 
-    // This reverts all changes from db tip back to just after block was processed
+    // 从 db tip 回滚到“处理完该区块之后”的状态（回滚该区块之后的所有变更）
     let cumulative_state_revert =
         HashedPostStateSorted::from_reverts::<KeccakKeyHasher>(provider, (block_number + 1)..)?;
 
-    // This reverts all changes from db tip back to just after block-1 was processed
+    // 从 db tip 回滚到“处理完 block-1 之后”的状态
     let mut cumulative_state_revert_prev = cumulative_state_revert.clone();
     cumulative_state_revert_prev.extend_ref_and_sort(&individual_state_revert);
 
-    // Step 2: Calculate cumulative trie updates revert for block-1
-    // This gives us the trie state as it was after block-1 was processed
+    // 第 2 步：计算 block-1 的累积 trie updates revert
+    // 这会得到“处理完 block-1 之后”的 trie 状态
     let prefix_sets_prev = cumulative_state_revert_prev.construct_prefix_sets();
     let input_prev = TrieInputSorted::new(
         Arc::default(),
@@ -104,11 +103,11 @@ where
             .1
             .into_sorted();
 
-    // Step 2: Create prefix sets from individual revert (only paths changed by this block)
+    // 第 2 步：从逐块 revert 构建 prefix sets（仅包含该区块变更过的路径）
     let prefix_sets = individual_state_revert.construct_prefix_sets();
 
-    // Step 3: Calculate trie updates for block
-    // Use cumulative trie updates for block-1 as the node overlay and cumulative state for block
+    // 第 3 步：计算该区块的 trie updates
+    // 使用 block-1 的累积 trie updates 作为节点 overlay，并使用该区块对应的累积 state revert
     let input = TrieInputSorted::new(
         Arc::new(cumulative_trie_updates_prev.clone()),
         Arc::new(cumulative_state_revert),
@@ -120,8 +119,8 @@ where
         .1
         .into_sorted();
 
-    // Step 4: Compute changesets using cumulative trie updates for block-1 as overlay
-    // Create an overlay cursor factory that has the trie state from after block-1
+    // 第 4 步：以 block-1 的累积 trie updates 作为 overlay 来计算 changeset
+    // 创建一个 overlay cursor factory，它代表“处理完 block-1 之后”的 trie 状态
     let db_cursor_factory = DatabaseTrieCursorFactory::new(provider.tx_ref());
     let overlay_factory =
         InMemoryTrieCursorFactory::new(db_cursor_factory, &cumulative_trie_updates_prev);
@@ -140,35 +139,35 @@ where
     Ok(changesets)
 }
 
-/// Computes block trie updates using the changeset cache.
+/// 使用 changeset 缓存计算区块的 trie updates。
 ///
-/// # Algorithm
+/// # 算法
 ///
-/// For block N:
-/// 1. Get cumulative trie reverts from block N+1 to db tip using the cache
-/// 2. Create an overlay cursor factory with these reverts (representing trie state after block N)
-/// 3. Walk through account trie changesets for block N
-/// 4. For each changed path, look up the current value using the overlay cursor
-/// 5. Walk through storage trie changesets for block N
-/// 6. For each changed path, look up the current value using the overlay cursor
-/// 7. Return the collected trie updates
+/// 对区块 N：
+/// 1. 通过缓存获取从 N+1 到 db tip 的累积 trie reverts
+/// 2. 使用这些 reverts 创建 overlay cursor factory（代表“处理完区块 N 之后”的 trie 状态）
+/// 3. 遍历区块 N 的 account trie changeset
+/// 4. 对每个变更路径，用 overlay cursor 查询当前节点值
+/// 5. 遍历区块 N 的 storage trie changeset
+/// 6. 对每个变更路径，用 overlay cursor 查询当前节点值
+/// 7. 返回收集到的 trie updates
 ///
-/// # Arguments
+/// # 参数
 ///
-/// * `cache` - Handle to the changeset cache for retrieving trie reverts
-/// * `provider` - Database provider for accessing changesets and block data
-/// * `block_number` - Block number to compute trie updates for
+/// * `cache` - changeset 缓存句柄（用于获取 trie reverts）
+/// * `provider` - 数据库 provider（用于访问 changeset 与区块数据）
+/// * `block_number` - 需要计算 trie updates 的区块号
 ///
-/// # Returns
+/// # 返回值
 ///
-/// Trie updates representing the state of trie nodes after the block was processed
+/// 表示“处理完该区块之后”的 trie 节点状态的 trie updates
 ///
-/// # Errors
+/// # 错误
 ///
-/// Returns error if:
-/// - Block number exceeds database tip
-/// - Database access fails
-/// - Cache retrieval fails
+/// 可能返回错误的情况：
+/// - 区块号超过数据库 tip
+/// - 数据库访问失败
+/// - 缓存读取/计算失败
 pub fn compute_block_trie_updates<Provider>(
     cache: &ChangesetCache,
     provider: &Provider,
@@ -179,7 +178,7 @@ where
 {
     let tx = provider.tx_ref();
 
-    // Get the database tip block number
+    // 获取数据库 tip（最新已完成的区块号）
     let db_tip_block = provider
         .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
         .as_ref()
@@ -189,7 +188,7 @@ where
             available: 0..=0,
         })?;
 
-    // Step 1: Get the block hash for the target block
+    // 第 1 步：获取目标区块的 hash
     let block_hash = provider.block_hash(block_number)?.ok_or_else(|| {
         ProviderError::other(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -197,39 +196,39 @@ where
         ))
     })?;
 
-    // Step 2: Get the trie changesets for the target block from cache
+    // 第 2 步：从缓存中获取目标区块的 trie changeset
     let changesets = cache.get_or_compute(block_hash, block_number, provider)?;
 
-    // Step 3: Get the trie reverts for the state after the target block using the cache
+    // 第 3 步：通过缓存获取“目标区块之后状态”的 trie reverts
     let reverts = cache.get_or_compute_range(provider, (block_number + 1)..=db_tip_block)?;
 
-    // Step 4: Create an InMemoryTrieCursorFactory with the reverts
-    // This gives us the trie state as it was after the target block was processed
+    // 第 4 步：用这些 reverts 构建 InMemoryTrieCursorFactory
+    // 这会得到“处理完目标区块之后”的 trie 状态
     let db_cursor_factory = DatabaseTrieCursorFactory::new(tx);
     let cursor_factory = InMemoryTrieCursorFactory::new(db_cursor_factory, &reverts);
 
-    // Step 5: Collect all account trie nodes that changed in the target block
+    // 第 5 步：收集目标区块中发生变更的 account trie 节点
     let mut account_nodes = Vec::new();
     let mut account_cursor = cursor_factory.account_trie_cursor()?;
 
-    // Iterate over the account nodes from the changesets
+    // 遍历 changeset 里的 account 节点
     for (nibbles, _old_node) in changesets.account_nodes_ref() {
-        // Look up the current value of this trie node using the overlay cursor
+        // 使用 overlay cursor 查询该 trie 节点的当前值
         let node_value = account_cursor.seek_exact(*nibbles)?.map(|(_, node)| node);
         account_nodes.push((*nibbles, node_value));
     }
 
-    // Step 6: Collect all storage trie nodes that changed in the target block
+    // 第 6 步：收集目标区块中发生变更的 storage trie 节点
     let mut storage_tries = B256Map::default();
 
-    // Iterate over the storage tries from the changesets
+    // 遍历 changeset 里的 storage tries
     for (hashed_address, storage_changeset) in changesets.storage_tries_ref() {
         let mut storage_cursor = cursor_factory.storage_trie_cursor(*hashed_address)?;
         let mut storage_nodes = Vec::new();
 
-        // Iterate over the storage nodes for this account
+        // 遍历该账户的 storage 节点
         for (nibbles, _old_node) in storage_changeset.storage_nodes_ref() {
-            // Look up the current value of this storage trie node
+            // 查询该 storage trie 节点的当前值
             let node_value = storage_cursor.seek_exact(*nibbles)?.map(|(_, node)| node);
             storage_nodes.push((*nibbles, node_value));
         }
@@ -243,10 +242,10 @@ where
     Ok(TrieUpdatesSorted::new(account_nodes, storage_tries))
 }
 
-/// Thread-safe changeset cache.
+/// 线程安全的 changeset 缓存。
 ///
-/// This type wraps a shared, mutable reference to the cache inner.
-/// The `RwLock` enables concurrent reads while ensuring exclusive access for writes.
+/// 该类型封装了对缓存内部结构的共享可变引用。
+/// `RwLock` 允许并发读，同时确保写操作的独占访问。
 #[derive(Debug, Clone)]
 pub struct ChangesetCache {
     inner: Arc<RwLock<ChangesetCacheInner>>,
@@ -259,63 +258,58 @@ impl Default for ChangesetCache {
 }
 
 impl ChangesetCache {
-    /// Creates a new cache.
+    /// 创建一个新的缓存。
     ///
-    /// The cache has no capacity limit and relies on explicit eviction
-    /// via the `evict()` method to manage memory usage.
+    /// 该缓存不设置容量上限，依赖显式调用 `evict()` 来控制内存占用。
     pub fn new() -> Self {
         Self { inner: Arc::new(RwLock::new(ChangesetCacheInner::new())) }
     }
 
-    /// Retrieves changesets for a block by hash.
+    /// 通过区块 hash 获取 changeset。
     ///
-    /// Returns `None` if the block is not in the cache (either evicted or never computed).
-    /// Updates hit/miss metrics accordingly.
+    /// 若缓存中不存在（被驱逐或从未计算过）则返回 `None`。
+    /// 同时会更新命中/未命中的统计指标。
     pub fn get(&self, block_hash: &B256) -> Option<Arc<TrieUpdatesSorted>> {
         self.inner.read().get(block_hash)
     }
 
-    /// Inserts changesets for a block into the cache.
+    /// 将区块的 changeset 插入缓存。
     ///
-    /// This method does not perform any eviction. Eviction must be explicitly
-    /// triggered by calling `evict()`.
+    /// 本方法不会执行驱逐；需要显式调用 `evict()` 触发驱逐。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `block_hash` - Hash of the block
-    /// * `block_number` - Block number for tracking and eviction
-    /// * `changesets` - Trie changesets to cache
+    /// * `block_hash` - 区块 hash
+    /// * `block_number` - 区块号（用于追踪与驱逐）
+    /// * `changesets` - 需要缓存的 trie changeset
     pub fn insert(&self, block_hash: B256, block_number: u64, changesets: Arc<TrieUpdatesSorted>) {
         self.inner.write().insert(block_hash, block_number, changesets)
     }
 
-    /// Evicts changesets for blocks below the given block number.
+    /// 驱逐区块号小于给定值的 changeset。
     ///
-    /// This should be called after blocks are persisted to the database to free
-    /// memory for changesets that are no longer needed in the cache.
+    /// 建议在区块持久化到数据库后调用，用于释放缓存中不再需要的 changeset 占用的内存。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `up_to_block` - Evict blocks with number < this value. Blocks with number >= this value
-    ///   are retained.
+    /// * `up_to_block` - 驱逐区块号 < 此值的条目；区块号 >= 此值的条目会被保留。
     pub fn evict(&self, up_to_block: BlockNumber) {
         self.inner.write().evict(up_to_block)
     }
 
-    /// Gets changesets from cache, or computes them on-the-fly if missing.
+    /// 从缓存获取 changeset；若缺失则即时计算并写入缓存。
     ///
-    /// This is the primary API for retrieving changesets. On cache miss,
-    /// it computes changesets from the database state and populates the cache.
+    /// 这是获取 changeset 的主要 API：当缓存未命中时，会基于数据库状态计算 changeset 并填充缓存。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `block_hash` - Hash of the block to get changesets for
-    /// * `block_number` - Block number (for cache insertion and logging)
-    /// * `provider` - Database provider for DB access
+    /// * `block_hash` - 目标区块 hash
+    /// * `block_number` - 目标区块号（用于写入缓存与日志）
+    /// * `provider` - 数据库 provider（用于 DB 访问）
     ///
-    /// # Returns
+    /// # 返回值
     ///
-    /// Changesets for the block, either from cache or computed on-the-fly
+    /// 目标区块的 changeset（来自缓存或即时计算）
     pub fn get_or_compute<P>(
         &self,
         block_hash: B256,
@@ -325,7 +319,7 @@ impl ChangesetCache {
     where
         P: DBProvider + StageCheckpointReader + ChangeSetReader + BlockNumReader,
     {
-        // Try cache first (with read lock)
+        // 优先尝试从缓存读取（读锁）
         {
             let cache = self.inner.read();
             if let Some(changesets) = cache.get(&block_hash) {
@@ -339,7 +333,7 @@ impl ChangesetCache {
             }
         }
 
-        // Cache miss - compute from database
+        // 缓存未命中：从数据库计算
         debug!(
             target: "trie::changeset_cache",
             ?block_hash,
@@ -349,7 +343,7 @@ impl ChangesetCache {
 
         let start = Instant::now();
 
-        // Compute changesets
+        // 计算 changeset
         let changesets =
             compute_block_trie_changesets(provider, block_number).map_err(ProviderError::other)?;
 
@@ -364,7 +358,7 @@ impl ChangesetCache {
             "Changeset computed from database and inserting into cache"
         );
 
-        // Store in cache (with write lock)
+        // 写入缓存（写锁）
         {
             let mut cache = self.inner.write();
             cache.insert(block_hash, block_number, Arc::clone(&changesets));
@@ -380,28 +374,27 @@ impl ChangesetCache {
         Ok(changesets)
     }
 
-    /// Gets or computes accumulated trie reverts for a range of blocks.
+    /// 获取或计算一个区块范围内累积的 trie reverts。
     ///
-    /// This method retrieves and accumulates all trie changesets (reverts) for the specified
-    /// block range (inclusive). The changesets are accumulated in reverse order (newest to oldest)
-    /// so that older values take precedence when there are conflicts.
+    /// 该方法会获取并累积指定区块范围（闭区间）内的所有 trie changeset（revert）。
+    /// changeset 会按从新到旧的顺序（倒序）累积，使得发生冲突时较旧的值具有更高优先级（覆盖较新的值）。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `provider` - Database provider for DB access and block lookups
-    /// * `range` - Block range to accumulate reverts for (inclusive)
+    /// * `provider` - 数据库 provider（用于 DB 访问与区块查找）
+    /// * `range` - 需要累积 reverts 的区块范围（闭区间）
     ///
-    /// # Returns
+    /// # 返回值
     ///
-    /// Accumulated trie reverts for all blocks in the specified range
+    /// 指定范围内所有区块累积后的 trie reverts
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// Returns error if:
-    /// - Any block in the range is beyond the database tip
-    /// - Database access fails
-    /// - Block hash lookup fails
-    /// - Changeset computation fails
+    /// 可能返回错误的情况：
+    /// - 范围内任意区块超过数据库 tip
+    /// - 数据库访问失败
+    /// - 区块 hash 查找失败
+    /// - changeset 计算失败
     pub fn get_or_compute_range<P>(
         &self,
         provider: &P,
@@ -410,7 +403,7 @@ impl ChangesetCache {
     where
         P: DBProvider + StageCheckpointReader + ChangeSetReader + BlockNumReader,
     {
-        // Get the database tip block number
+        // 获取数据库 tip（最新已完成的区块号）
         let db_tip_block = provider
             .get_stage_checkpoint(reth_stages_types::StageId::Finish)?
             .as_ref()
@@ -423,7 +416,7 @@ impl ChangesetCache {
         let start_block = *range.start();
         let end_block = *range.end();
 
-        // If range end is beyond the tip, return an error
+        // 若 range 结束区块超过 tip，则返回错误
         if end_block > db_tip_block {
             return Err(ProviderError::InsufficientChangesets {
                 requested: end_block,
@@ -441,13 +434,12 @@ impl ChangesetCache {
             "Starting get_or_compute_range"
         );
 
-        // Use changeset cache to retrieve and accumulate reverts block by block.
-        // Iterate in reverse order (newest to oldest) so that older changesets
-        // take precedence when there are conflicting updates.
+        // 逐块使用缓存获取并累积 reverts。
+        // 以从新到旧的顺序迭代，使得冲突时较旧的 changeset 具有更高优先级（覆盖较新的值）。
         let mut accumulated_reverts = TrieUpdatesSorted::default();
 
         for block_number in range.rev() {
-            // Get the block hash for this block number
+            // 获取该区块号对应的区块 hash
             let block_hash = provider.block_hash(block_number)?.ok_or_else(|| {
                 ProviderError::other(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -462,13 +454,11 @@ impl ChangesetCache {
                 "Looked up block hash for block number in range"
             );
 
-            // Get changesets from cache (or compute on-the-fly)
+            // 从缓存获取 changeset（或即时计算）
             let changesets = self.get_or_compute(block_hash, block_number, provider)?;
 
-            // Overlay this block's changesets on top of accumulated reverts.
-            // Since we iterate newest to oldest, older values are added last
-            // and overwrite any conflicting newer values (oldest changeset values take
-            // precedence).
+            // 将该区块的 changeset 叠加到累积 reverts 之上。
+            // 由于我们从新到旧迭代，较旧的值会在最后写入，并覆盖冲突的较新值（较旧值优先）。
             accumulated_reverts.extend_ref_and_sort(&changesets);
         }
 
@@ -492,57 +482,54 @@ impl ChangesetCache {
     }
 }
 
-/// In-memory cache for trie changesets with explicit eviction policy.
+/// 具有显式驱逐策略的内存 trie changeset 缓存。
 ///
-/// Holds changesets for blocks that have been validated but not yet persisted.
-/// Keyed by block hash for fast lookup during reorgs. Eviction is controlled
-/// explicitly by the engine API tree handler when persistence completes.
+/// 保存已校验但尚未持久化的区块 changeset；以区块 hash 作为 key，便于 reorg 时快速查找。
+/// 持久化完成后由 engine API tree handler 显式触发驱逐。
 ///
-/// ## Eviction Policy
+/// ## 驱逐策略
 ///
-/// Unlike traditional caches with automatic eviction, this cache requires explicit
-/// eviction calls. The engine API tree handler calls `evict(block_number)` after
-/// blocks are persisted to the database, ensuring changesets remain available
-/// until their corresponding blocks are safely on disk.
+/// 与常见的“自动驱逐”缓存不同，该缓存需要显式调用驱逐。
+/// engine API tree handler 会在区块持久化到数据库之后调用 `evict(block_number)`，
+/// 确保在对应区块安全落盘之前 changeset 始终可用。
 ///
-/// ## Metrics
+/// ## 指标（metrics）
 ///
-/// The cache maintains several metrics for observability:
-/// - `hits`: Number of successful cache lookups
-/// - `misses`: Number of failed cache lookups
-/// - `evictions`: Number of blocks evicted
-/// - `size`: Current number of cached blocks
+/// 缓存提供若干观测指标：
+/// - `hits`：缓存命中次数
+/// - `misses`：缓存未命中次数
+/// - `evictions`：被驱逐的区块数量
+/// - `size`：当前缓存的区块数量
 #[derive(Debug)]
 struct ChangesetCacheInner {
-    /// Cache entries: block hash -> (block number, changesets)
+    /// 缓存条目：block hash -> (block number, changesets)
     entries: HashMap<B256, (u64, Arc<TrieUpdatesSorted>)>,
 
-    /// Block number to hashes mapping for eviction
+    /// 用于驱逐的映射：block number -> hashes
     block_numbers: BTreeMap<u64, Vec<B256>>,
 
-    /// Metrics for monitoring cache behavior
+    /// 用于监控缓存行为的指标
     #[cfg(feature = "metrics")]
     metrics: ChangesetCacheMetrics,
 }
 
 #[cfg(feature = "metrics")]
-/// Metrics for the changeset cache.
+/// changeset 缓存指标。
 ///
-/// These metrics provide visibility into cache performance and help identify
-/// potential issues like high miss rates.
+/// 这些指标用于观测缓存性能，并帮助定位诸如未命中率过高等潜在问题。
 #[derive(Metrics, Clone)]
 #[metrics(scope = "trie.changeset_cache")]
 struct ChangesetCacheMetrics {
-    /// Cache hit counter
+    /// 缓存命中计数
     hits: Counter,
 
-    /// Cache miss counter
+    /// 缓存未命中计数
     misses: Counter,
 
-    /// Eviction counter
+    /// 驱逐计数
     evictions: Counter,
 
-    /// Current cache size (number of entries)
+    /// 当前缓存大小（条目数）
     size: Gauge,
 }
 
@@ -553,10 +540,9 @@ impl Default for ChangesetCacheInner {
 }
 
 impl ChangesetCacheInner {
-    /// Creates a new empty changeset cache.
+    /// 创建一个空的 changeset 缓存。
     ///
-    /// The cache has no capacity limit and relies on explicit eviction
-    /// via the `evict()` method to manage memory usage.
+    /// 该缓存不设置容量上限，依赖显式调用 `evict()` 来控制内存占用。
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -590,13 +576,13 @@ impl ChangesetCacheInner {
             "Inserting changeset into cache"
         );
 
-        // Insert the entry
+        // 写入条目
         self.entries.insert(block_hash, (block_number, changesets));
 
-        // Add block hash to block_numbers mapping
+        // 将 block hash 加入 block_numbers 映射
         self.block_numbers.entry(block_number).or_default().push(block_hash);
 
-        // Update size metric
+        // 更新 size 指标
         #[cfg(feature = "metrics")]
         self.metrics.size.set(self.entries.len() as f64);
 
@@ -617,11 +603,11 @@ impl ChangesetCacheInner {
             "Starting cache eviction"
         );
 
-        // Find all block numbers that should be evicted (< up_to_block)
+        // 找出需要驱逐的所有区块号（< up_to_block）
         let blocks_to_evict: Vec<u64> =
             self.block_numbers.range(..up_to_block).map(|(num, _)| *num).collect();
 
-        // Remove entries for each block number below threshold
+        // 删除所有低于阈值的区块号对应的条目
         #[cfg(feature = "metrics")]
         let mut evicted_count = 0;
         #[cfg(not(feature = "metrics"))]
@@ -651,7 +637,7 @@ impl ChangesetCacheInner {
             "Finished cache eviction"
         );
 
-        // Update metrics if we evicted anything
+        // 若发生驱逐则更新指标
         #[cfg(feature = "metrics")]
         if evicted_count > 0 {
             self.metrics.evictions.increment(evicted_count as u64);
@@ -665,7 +651,7 @@ mod tests {
     use super::*;
     use alloy_primitives::map::B256Map;
 
-    // Helper function to create empty TrieUpdatesSorted for testing
+    // 测试辅助函数：创建一个空的 TrieUpdatesSorted
     fn create_test_changesets() -> Arc<TrieUpdatesSorted> {
         Arc::new(TrieUpdatesSorted::new(vec![], B256Map::default()))
     }
@@ -678,7 +664,7 @@ mod tests {
 
         cache.insert(hash, 100, Arc::clone(&changesets));
 
-        // Should be able to retrieve it
+        // 应当能够取回
         let retrieved = cache.get(&hash);
         assert!(retrieved.is_some());
         assert_eq!(cache.entries.len(), 1);
@@ -688,7 +674,7 @@ mod tests {
     fn test_insert_multiple_entries() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert 10 blocks
+        // 插入 10 个区块
         let mut hashes = Vec::new();
         for i in 0..10 {
             let hash = B256::random();
@@ -696,7 +682,7 @@ mod tests {
             hashes.push(hash);
         }
 
-        // Should be able to retrieve all
+        // 应当能够全部取回
         assert_eq!(cache.entries.len(), 10);
         for hash in &hashes {
             assert!(cache.get(hash).is_some());
@@ -707,7 +693,7 @@ mod tests {
     fn test_eviction_when_explicitly_called() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert 15 blocks (0-14)
+        // 插入 15 个区块（0-14）
         let mut hashes = Vec::new();
         for i in 0..15 {
             let hash = B256::random();
@@ -715,21 +701,21 @@ mod tests {
             hashes.push((i, hash));
         }
 
-        // All blocks should be present (no automatic eviction)
+        // 所有区块都应存在（没有自动驱逐）
         assert_eq!(cache.entries.len(), 15);
 
-        // Explicitly evict blocks < 4
+        // 显式驱逐区块号 < 4 的条目
         cache.evict(4);
 
-        // Blocks 0-3 should be evicted
+        // 区块 0-3 应当被驱逐
         assert_eq!(cache.entries.len(), 11); // blocks 4-14 = 11 blocks
 
-        // Verify blocks 0-3 are evicted
+        // 验证区块 0-3 已被驱逐
         for i in 0..4 {
             assert!(cache.get(&hashes[i as usize].1).is_none(), "Block {} should be evicted", i);
         }
 
-        // Verify blocks 4-14 are still present
+        // 验证区块 4-14 仍然存在
         for i in 4..15 {
             assert!(cache.get(&hashes[i as usize].1).is_some(), "Block {} should be present", i);
         }
@@ -739,7 +725,7 @@ mod tests {
     fn test_eviction_with_persistence_watermark() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert blocks 100-165
+        // 插入区块 100-165
         let mut hashes = std::collections::HashMap::new();
         for i in 100..=165 {
             let hash = B256::random();
@@ -747,21 +733,21 @@ mod tests {
             hashes.insert(i, hash);
         }
 
-        // All blocks should be present (no automatic eviction)
+        // 所有区块都应存在（没有自动驱逐）
         assert_eq!(cache.entries.len(), 66);
 
-        // Simulate persistence up to block 164, with 64-block retention window
-        // Eviction threshold = 164 - 64 = 100
+        // 模拟持久化到区块 164，并保留 64 个区块的窗口
+        // 驱逐阈值 = 164 - 64 = 100
         cache.evict(100);
 
-        // Blocks 100-165 should remain (66 blocks)
+        // 区块 100-165 应保留（66 个区块）
         assert_eq!(cache.entries.len(), 66);
 
-        // Simulate persistence up to block 165
-        // Eviction threshold = 165 - 64 = 101
+        // 模拟持久化到区块 165
+        // 驱逐阈值 = 165 - 64 = 101
         cache.evict(101);
 
-        // Blocks 101-165 should remain (65 blocks)
+        // 区块 101-165 应保留（65 个区块）
         assert_eq!(cache.entries.len(), 65);
         assert!(cache.get(&hashes[&100]).is_none());
         assert!(cache.get(&hashes[&101]).is_some());
@@ -771,7 +757,7 @@ mod tests {
     fn test_out_of_order_inserts_with_explicit_eviction() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert blocks in random order
+        // 以随机顺序插入区块
         let hash_10 = B256::random();
         cache.insert(hash_10, 10, create_test_changesets());
 
@@ -784,10 +770,10 @@ mod tests {
         let hash_3 = B256::random();
         cache.insert(hash_3, 3, create_test_changesets());
 
-        // All blocks should be present (no automatic eviction)
+        // 所有区块都应存在（没有自动驱逐）
         assert_eq!(cache.entries.len(), 4);
 
-        // Explicitly evict blocks < 5
+        // 显式驱逐区块号 < 5 的条目
         cache.evict(5);
 
         assert!(cache.get(&hash_3).is_none(), "Block 3 should be evicted");
@@ -800,13 +786,13 @@ mod tests {
     fn test_multiple_blocks_same_number() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert multiple blocks with same number (side chains)
+        // 插入多个相同高度的区块（侧链）
         let hash_1a = B256::random();
         let hash_1b = B256::random();
         cache.insert(hash_1a, 100, create_test_changesets());
         cache.insert(hash_1b, 100, create_test_changesets());
 
-        // Both should be retrievable
+        // 两个都应可取回
         assert!(cache.get(&hash_1a).is_some());
         assert!(cache.get(&hash_1b).is_some());
         assert_eq!(cache.entries.len(), 2);
@@ -816,7 +802,7 @@ mod tests {
     fn test_eviction_removes_all_side_chains() {
         let mut cache = ChangesetCacheInner::new();
 
-        // Insert multiple blocks at same height (side chains)
+        // 插入多个相同高度的区块（侧链）
         let hash_10a = B256::random();
         let hash_10b = B256::random();
         let hash_10c = B256::random();
@@ -829,7 +815,7 @@ mod tests {
 
         assert_eq!(cache.entries.len(), 4);
 
-        // Evict blocks < 15 - should remove all three side chains at height 10
+        // 驱逐区块号 < 15 的条目：应移除高度为 10 的三条侧链
         cache.evict(15);
 
         assert_eq!(cache.entries.len(), 1);

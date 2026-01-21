@@ -43,19 +43,19 @@ use tokio::sync::{mpsc::unbounded_channel, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::warn;
 
-/// The engine node launcher.
+/// 引擎节点启动器。
 #[derive(Debug)]
 pub struct EngineNodeLauncher {
-    /// The task executor for the node.
+    /// 节点的任务执行上下文。
     pub ctx: LaunchContext,
 
-    /// Temporary configuration for engine tree.
-    /// After engine is stabilized, this should be configured through node builder.
+    /// 引擎树（engine tree）的临时配置。
+    /// 待引擎稳定后，应通过节点构建器进行配置。
     pub engine_tree_config: TreeConfig,
 }
 
 impl EngineNodeLauncher {
-    /// Create a new instance of the ethereum node launcher.
+    /// 创建一个新的以太坊节点启动器实例。
     pub const fn new(
         task_executor: TaskExecutor,
         data_dir: ChainPath<DataDirPath>,
@@ -64,6 +64,8 @@ impl EngineNodeLauncher {
         Self { ctx: LaunchContext::new(task_executor, data_dir), engine_tree_config }
     }
 
+    /// 启动节点的核心逻辑。
+    /// run step 011
     async fn launch_node<T, CB, AO>(
         self,
         target: NodeBuilderWithComponents<T, CB, AO>,
@@ -88,78 +90,79 @@ impl EngineNodeLauncher {
         } = target;
         let NodeHooks { on_component_initialized, on_node_started, .. } = hooks;
 
-        // Create changeset cache that will be shared across the engine
+        // 创建在整个引擎中共享的变更集（changeset）缓存
         let changeset_cache = ChangesetCache::new();
 
-        // setup the launch context
+        // 设置启动上下文
         let ctx = ctx
             .with_configured_globals(engine_tree_config.reserved_cpu_cores())
-            // load the toml config
+            // 加载 toml 配置
             .with_loaded_toml_config(config)?
-            // add resolved peers
+            // 添加解析后的对等节点
             .with_resolved_peers()?
-            // attach the database
+            // 挂载数据库
             .attach(database.clone())
-            // ensure certain settings take effect
+            // 确保某些设置生效
             .with_adjusted_configs()
-            // Create the provider factory with changeset cache
+            // 创建带有变更集缓存的提供者工厂
             .with_provider_factory::<_, <CB::Components as NodeComponents<T>>::Evm>(changeset_cache.clone()).await?
             .inspect(|ctx| {
-                info!(target: "reth::cli", "Database opened");
+                info!(target: "reth::cli", "数据库已打开");
                 match ctx.provider_factory().storage_settings() {
                     Ok(settings) => {
                         info!(
                             target: "reth::cli",
                             ?settings,
-                            "Storage settings"
+                            "存储设置"
                         );
                     },
                     Err(err) => {
                         warn!(
                             target: "reth::cli",
                             ?err,
-                            "Failed to get storage settings"
+                            "获取存储设置失败"
                         );
                     },
                 }
             })
             .with_prometheus_server().await?
             .inspect(|this| {
-                debug!(target: "reth::cli", chain=%this.chain_id(), genesis=?this.genesis_hash(), "Initializing genesis");
+                debug!(target: "reth::cli", chain=%this.chain_id(), genesis=?this.genesis_hash(), "正在初始化创世状态");
             })
             .with_genesis()?
             .inspect(|this: &LaunchContextWith<Attached<WithConfigs<<T::Types as NodeTypes>::ChainSpec>, _>>| {
                 info!(target: "reth::cli", "\n{}", this.chain_spec().display_hardforks());
             })
             .with_metrics_task()
-            // passing FullNodeTypes as type parameter here so that we can build
-            // later the components.
+            // 在此处传递 FullNodeTypes 作为类型参数，以便后续构建组件
             .with_blockchain_db::<T, _>(move |provider_factory| {
                 Ok(BlockchainProvider::new(provider_factory)?)
             })?
+            // 构建所有组件
             .with_components(components_builder, on_component_initialized).await?;
 
-        // spawn exexs if any
+        // 如果安装了 ExEx（Execution Extensions），则启动它们
         let maybe_exex_manager_handle = ctx.launch_exex(installed_exex).await?;
 
-        // create pipeline
+        // 创建网络流水线
         let network_handle = ctx.components().network().clone();
         let network_client = network_handle.fetch_client().await?;
         let (consensus_engine_tx, consensus_engine_rx) = unbounded_channel();
 
         let node_config = ctx.node_config();
 
-        // We always assume that node is syncing after a restart
+        // 默认重启后节点处于同步状态
         network_handle.update_sync_state(SyncState::Syncing);
 
         let max_block = ctx.max_block(network_client.clone()).await?;
 
         let static_file_producer = ctx.static_file_producer();
         let static_file_producer_events = static_file_producer.lock().events();
-        info!(target: "reth::cli", "StaticFileProducer initialized");
+        info!(target: "reth::cli", "StaticFileProducer 已初始化");
 
         let consensus = Arc::new(ctx.components().consensus().clone());
 
+        // 构建带有网络能力的流水线
         let pipeline = build_networked_pipeline(
             &ctx.toml_config().stages,
             network_client.clone(),
@@ -175,7 +178,7 @@ impl EngineNodeLauncher {
             ctx.era_import_source(),
         )?;
 
-        // The new engine writes directly to static files. This ensures that they're up to the tip.
+        // 新引擎直接写入静态文件，确保静态文件更新到最新高度
         pipeline.move_to_static_files()?;
 
         let pipeline_events = pipeline.events();
@@ -187,13 +190,13 @@ impl EngineNodeLauncher {
         }
         let pruner = pruner_builder.build_with_provider_factory(ctx.provider_factory().clone());
         let pruner_events = pruner.events();
-        info!(target: "reth::cli", prune_config=?ctx.prune_config(), "Pruner initialized");
+        info!(target: "reth::cli", prune_config=?ctx.prune_config(), "修剪器（Pruner）已初始化");
 
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
 
-        // extract the jwt secret from the args if possible
+        // 如果可能，从参数中提取 JWT 密钥
         let jwt_secret = ctx.auth_jwt_secret()?;
 
         let add_ons_ctx = AddOnsContext {
@@ -205,13 +208,13 @@ impl EngineNodeLauncher {
         };
         let validator_builder = add_ons.engine_validator_builder();
 
-        // Build the engine validator with all required components
+        // 使用所有必需组件构建引擎验证器
         let engine_validator = validator_builder
             .clone()
             .build_tree_validator(&add_ons_ctx, engine_tree_config.clone(), changeset_cache.clone())
             .await?;
 
-        // Create the consensus engine stream with optional reorg
+        // 创建带有可选重组（reorg）支持的共识引擎消息流
         let consensus_engine_stream = UnboundedReceiverStream::from(consensus_engine_rx)
             .maybe_skip_fcu(node_config.debug.skip_fcu)
             .maybe_skip_new_payload(node_config.debug.skip_new_payload)
@@ -219,7 +222,7 @@ impl EngineNodeLauncher {
                 ctx.blockchain_db().clone(),
                 ctx.components().evm_config().clone(),
                 || async {
-                    // Create a separate cache for reorg validator (not shared with main engine)
+                    // 为重组验证器创建单独的缓存（不与主引擎共享）
                     let reorg_cache = ChangesetCache::new();
                     validator_builder
                         .build_tree_validator(&add_ons_ctx, engine_tree_config.clone(), reorg_cache)
@@ -229,9 +232,7 @@ impl EngineNodeLauncher {
                 node_config.debug.reorg_depth,
             )
             .await?
-            // Store messages _after_ skipping so that `replay-engine` command
-            // would replay only the messages that were observed by the engine
-            // during this run.
+            // 在跳过处理之后存储消息，以便 `replay-engine` 命令仅回放引擎实际观察到的消息
             .maybe_store_messages(node_config.debug.engine_api_store.clone());
 
         let mut engine_service = EngineService::new(
@@ -252,7 +253,7 @@ impl EngineNodeLauncher {
             changeset_cache,
         );
 
-        info!(target: "reth::cli", "Consensus engine initialized");
+        info!(target: "reth::cli", "共识引擎已初始化");
 
         #[allow(clippy::needless_continue)]
         let events = stream_select!(
@@ -263,6 +264,7 @@ impl EngineNodeLauncher {
             static_file_producer_events.map(Into::into),
         );
 
+        // 启动关键事件处理任务
         ctx.task_executor().spawn_critical(
             "events task",
             Box::pin(node::handle_events(
@@ -272,6 +274,7 @@ impl EngineNodeLauncher {
             )),
         );
 
+        // 启动附加组件（如 RPC 服务）
         let RpcHandle {
             rpc_server_handles,
             rpc_registry,
@@ -280,17 +283,17 @@ impl EngineNodeLauncher {
             engine_shutdown: _,
         } = add_ons.launch_add_ons(add_ons_ctx).await?;
 
-        // Create engine shutdown handle
+        // 创建引擎关闭句柄
         let (engine_shutdown, shutdown_rx) = EngineShutdown::new();
 
-        // Run consensus engine to completion
+        // 运行共识引擎直至完成
         let initial_target = ctx.initial_backfill_target()?;
         let mut built_payloads = ctx
             .components()
             .payload_builder_handle()
             .subscribe()
             .await
-            .map_err(|e| eyre::eyre!("Failed to subscribe to payload builder events: {:?}", e))?
+            .map_err(|e| eyre::eyre!("订阅 Payload 构建器事件失败: {:?}", e))?
             .into_built_payload_stream()
             .fuse();
 
@@ -300,11 +303,12 @@ impl EngineNodeLauncher {
         let terminate_after_backfill = ctx.terminate_after_initial_backfill();
         let startup_sync_state_idle = ctx.node_config().debug.startup_sync_state_idle;
 
-        info!(target: "reth::cli", "Starting consensus engine");
+        info!(target: "reth::cli", "正在启动共识引擎");
         let consensus_engine = async move {
+            // 如果有初始回填目标，则开始回填同步
             if let Some(initial_target) = initial_target {
-                debug!(target: "reth::cli", %initial_target,  "start backfill sync");
-                // network_handle's sync state is already initialized at Syncing
+                debug!(target: "reth::cli", %initial_target,  "开始回填同步");
+                // network_handle 的同步状态在 Syncing 时已经初始化
                 engine_service.orchestrator_mut().start_backfill_sync(initial_target);
             } else if startup_sync_state_idle {
                 network_handle.update_sync_state(SyncState::Idle);
@@ -313,14 +317,13 @@ impl EngineNodeLauncher {
             let mut res = Ok(());
             let mut shutdown_rx = shutdown_rx.fuse();
 
-            // advance the chain and await payloads built locally to add into the engine api
-            // tree handler to prevent re-execution if that block is received as payload from
-            // the CL
+            // 推进区块链并等待本地构建的 payload，以便将其加入引擎 API 树处理器，
+            // 从而防止从 CL 接收到该区块作为 payload 时进行重复执行。
             loop {
                 tokio::select! {
                     shutdown_req = &mut shutdown_rx => {
                         if let Ok(req) = shutdown_req {
-                            debug!(target: "reth::cli", "received engine shutdown request");
+                            debug!(target: "reth::cli", "收到引擎关闭请求");
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(
                                 FromOrchestrator::Terminate { tx: req.done_tx }.into()
                             );
@@ -328,17 +331,17 @@ impl EngineNodeLauncher {
                     }
                     payload = built_payloads.select_next_some() => {
                         if let Some(executed_block) = payload.executed_block() {
-                            debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
+                            debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "正在插入构建的 payload");
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
                         }
                     }
                     event = engine_service.next() => {
                         let Some(event) = event else { break };
-                        debug!(target: "reth::cli", "Event: {event}");
+                        debug!(target: "reth::cli", "事件: {event}");
                         match event {
                             ChainEvent::BackfillSyncFinished => {
                                 if terminate_after_backfill {
-                                    debug!(target: "reth::cli", "Terminating after initial backfill");
+                                    debug!(target: "reth::cli", "初始回填后终止");
                                     break
                                 }
                                 if startup_sync_state_idle {
@@ -349,13 +352,13 @@ impl EngineNodeLauncher {
                                 network_handle.update_sync_state(SyncState::Syncing);
                             }
                             ChainEvent::FatalError => {
-                                error!(target: "reth::cli", "Fatal error in consensus engine");
-                                res = Err(eyre::eyre!("Fatal error in consensus engine"));
+                                error!(target: "reth::cli", "共识引擎发生致命错误");
+                                res = Err(eyre::eyre!("共识引擎发生致命错误"));
                                 break
                             }
                             ChainEvent::Handler(ev) => {
                                 if let Some(head) = ev.canonical_header() {
-                                    // Once we're progressing via live sync, we can consider the node is not syncing anymore
+                                    // 一旦通过 live sync 进行推进，我们可以认为节点不再处于同步状态
                                     network_handle.update_sync_state(SyncState::Idle);
                                     let head_block = Head {
                                         number: head.number(),
@@ -384,7 +387,7 @@ impl EngineNodeLauncher {
 
             let _ = exit.send(res);
         };
-        ctx.task_executor().spawn_critical("consensus engine", Box::pin(consensus_engine));
+        ctx.task_executor().spawn_critical("共识引擎", Box::pin(consensus_engine));
 
         let engine_events_for_ethstats = engine_events.new_listener();
 
@@ -405,7 +408,7 @@ impl EngineNodeLauncher {
                 engine_shutdown,
             },
         };
-        // Notify on node started
+        // 节点启动后的通知
         on_node_started.on_event(FullNode::clone(&full_node))?;
 
         ctx.spawn_ethstats(engine_events_for_ethstats).await?;

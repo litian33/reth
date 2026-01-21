@@ -1,10 +1,10 @@
-//! Implements Ethereum wire protocol for versions 66 through 70.
-//! Defines structs/enums for messages, request-response pairs, and broadcasts.
-//! Handles compatibility with [`EthVersion`].
+//! 实现以太坊有线协议版本 66 到 70。
+//! 定义了消息、请求-响应对以及广播的结构体和枚举。
+//! 处理与 [`EthVersion`] 的兼容性。
 //!
-//! Examples include creating, encoding, and decoding protocol messages.
+//! 示例包括创建、编码和解码协议消息。
 //!
-//! Reference: [Ethereum Wire Protocol](https://github.com/ethereum/devp2p/blob/master/caps/eth.md).
+//! 参考: [以太坊有线协议](https://github.com/ethereum/devp2p/blob/master/caps/eth.md)。
 
 use super::{
     broadcast::NewBlockHashes, BlockBodies, BlockHeaders, GetBlockBodies, GetBlockHeaders,
@@ -24,31 +24,33 @@ use alloy_primitives::{
 use alloy_rlp::{length_of_length, Decodable, Encodable, Header};
 use core::fmt::Debug;
 
-/// [`MAX_MESSAGE_SIZE`] is the maximum cap on the size of a protocol message.
+/// [`MAX_MESSAGE_SIZE`] 是协议消息大小的最大上限（10MB）。
+// 参考 Geth 实现，防止大消息攻击。
 // https://github.com/ethereum/go-ethereum/blob/30602163d5d8321fbc68afdcbbaf2362b2641bde/eth/protocols/eth/protocol.go#L50
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
-/// Error when sending/receiving a message
+/// 发送/接收消息时可能出现的错误
 #[derive(thiserror::Error, Debug)]
 pub enum MessageError {
-    /// Flags an unrecognized message ID for a given protocol version.
+    /// 标记给定协议版本不支持的消息 ID。
     #[error("message id {1:?} is invalid for version {0:?}")]
     Invalid(EthVersion, EthMessageID),
-    /// Thrown when rlp decoding a message failed.
+    /// RLP 解码消息失败。
     #[error("RLP error: {0}")]
     RlpError(#[from] alloy_rlp::Error),
-    /// Other message error with custom message
+    /// 带有自定义消息的其他错误。
     #[error("{0}")]
     Other(String),
 }
 
-/// An `eth` protocol message, containing a message ID and payload.
+/// 一个 `eth` 协议消息，包含消息 ID 和负载（Payload）。
+/// 这是在线缆上实际传输的结构。
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProtocolMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
-    /// The unique identifier representing the type of the Ethereum message.
+    /// 唯一标识符，代表以太坊消息的类型。
     pub message_type: EthMessageID,
-    /// The content of the message, including specific data based on the message type.
+    /// 消息的具体内容，包括基于消息类型的特定数据。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "EthMessage<N>: serde::Serialize + serde::de::DeserializeOwned")
@@ -57,15 +59,17 @@ pub struct ProtocolMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
 }
 
 impl<N: NetworkPrimitives> ProtocolMessage<N> {
-    /// Create a new `ProtocolMessage` from a message type and message rlp bytes.
+    /// 根据消息类型和消息 RLP 字节创建一个新的 `ProtocolMessage`。
     ///
-    /// This will enforce decoding according to the given [`EthVersion`] of the connection.
+    /// **核心逻辑**：此函数根据连接的 [`EthVersion`] 强制执行特定的解码规则，
+    /// 因为不同版本的以太坊协议对同一 ID 的消息可能有不同的结构定义。
     pub fn decode_message(version: EthVersion, buf: &mut &[u8]) -> Result<Self, MessageError> {
         let message_type = EthMessageID::decode(buf)?;
 
-        // For EIP-7642 (https://github.com/ethereum/EIPs/blob/master/EIPS/eip-7642.md):
-        // pre-merge (legacy) status messages include total difficulty, whereas eth/69 omits it.
+        // 对于 EIP-7642:
+        // 合并前（遗留）的状态消息包含总难度，而 eth/69 则省略了它。
         let message = match message_type {
+            // 握手状态消息：eth/69 之后删除了总难度 (total difficulty)
             EthMessageID::Status => EthMessage::Status(if version < EthVersion::Eth69 {
                 StatusMessage::Legacy(Status::decode(buf)?)
             } else {
@@ -78,6 +82,7 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
                 EthMessage::NewBlock(Box::new(N::NewBlockPayload::decode(buf)?))
             }
             EthMessageID::Transactions => EthMessage::Transactions(Transactions::decode(buf)?),
+            // 交易池哈希广播：eth/68 引入了类型和大小信息
             EthMessageID::NewPooledTransactionHashes => {
                 if version >= EthVersion::Eth68 {
                     EthMessage::NewPooledTransactionHashes68(NewPooledTransactionHashes68::decode(
@@ -89,6 +94,7 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
                     )?)
                 }
             }
+            // 以下是请求-响应对消息，由 RequestPair 封装（包含 request_id）
             EthMessageID::GetBlockHeaders => EthMessage::GetBlockHeaders(RequestPair::decode(buf)?),
             EthMessageID::BlockHeaders => EthMessage::BlockHeaders(RequestPair::decode(buf)?),
             EthMessageID::GetBlockBodies => EthMessage::GetBlockBodies(RequestPair::decode(buf)?),
@@ -99,6 +105,7 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
             EthMessageID::PooledTransactions => {
                 EthMessage::PooledTransactions(RequestPair::decode(buf)?)
             }
+            // eth/67 删除了 GetNodeData 和 NodeData 消息
             EthMessageID::GetNodeData => {
                 if version >= EthVersion::Eth67 {
                     return Err(MessageError::Invalid(version, EthMessageID::GetNodeData))
@@ -111,6 +118,7 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
                 }
                 EthMessage::NodeData(RequestPair::decode(buf)?)
             }
+            // 收据请求：eth/70 改变了 GetReceipts 的编码方式
             EthMessageID::GetReceipts => {
                 if version >= EthVersion::Eth70 {
                     EthMessage::GetReceipts70(RequestPair::decode(buf)?)
@@ -118,30 +126,34 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
                     EthMessage::GetReceipts(RequestPair::decode(buf)?)
                 }
             }
+            // 收据响应：
+            // eth/69 删除了布隆过滤器 (Bloom Filter)
+            // eth/70 (EIP-7975) 引入了部分收据和 lastBlockIncomplete 标志
             EthMessageID::Receipts => {
                 match version {
                     v if v >= EthVersion::Eth70 => {
-                        // eth/70 continues to omit bloom filters and adds the
-                        // `lastBlockIncomplete` flag, encoded as
-                        // `[request-id, lastBlockIncomplete, [[receipt₁, receipt₂], ...]]`.
+                        // eth/70 继续省略布隆过滤器，并添加 `lastBlockIncomplete` 标志，
+                        // 编码为 `[request-id, lastBlockIncomplete, [[receipt₁, receipt₂], ...]]`。
                         EthMessage::Receipts70(RequestPair::decode(buf)?)
                     }
                     EthVersion::Eth69 => {
-                        // with eth69, receipts no longer include the bloom
+                        // 在 eth69 中，收据不再包含布隆过滤器
                         EthMessage::Receipts69(RequestPair::decode(buf)?)
                     }
                     _ => {
-                        // before eth69 we need to decode the bloom  as well
+                        // 在 eth69 之前，我们也需要解码布隆过滤器
                         EthMessage::Receipts(RequestPair::decode(buf)?)
                     }
                 }
             }
+            // eth/69 引入的消息，用于告知节点服务的历史区块范围
             EthMessageID::BlockRangeUpdate => {
                 if version < EthVersion::Eth69 {
                     return Err(MessageError::Invalid(version, EthMessageID::BlockRangeUpdate))
                 }
                 EthMessage::BlockRangeUpdate(BlockRangeUpdate::decode(buf)?)
             }
+            // 处理未知或自定义扩展消息
             EthMessageID::Other(_) => {
                 let raw_payload = Bytes::copy_from_slice(buf);
                 buf.advance(raw_payload.len());
@@ -156,8 +168,7 @@ impl<N: NetworkPrimitives> ProtocolMessage<N> {
 }
 
 impl<N: NetworkPrimitives> Encodable for ProtocolMessage<N> {
-    /// Encodes the protocol message into bytes. The message type is encoded as a single byte and
-    /// prepended to the message.
+    /// 将协议消息编码为字节。消息类型被编码为单个字节并放在消息前面。
     fn encode(&self, out: &mut dyn BufMut) {
         self.message_type.encode(out);
         self.message.encode(out);
@@ -173,19 +184,17 @@ impl<N: NetworkPrimitives> From<EthMessage<N>> for ProtocolMessage<N> {
     }
 }
 
-/// Represents messages that can be sent to multiple peers.
+/// 表示可以发送给多个对等节点的广播消息。
 #[derive(Clone, Debug)]
 pub struct ProtocolBroadcastMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
-    /// The unique identifier representing the type of the Ethereum message.
+    /// 唯一标识符，代表以太坊消息的类型。
     pub message_type: EthMessageID,
-    /// The content of the message to be broadcasted, including specific data based on the message
-    /// type.
+    /// 要广播的消息内容，包括基于消息类型的特定数据。
     pub message: EthBroadcastMessage<N>,
 }
 
 impl<N: NetworkPrimitives> Encodable for ProtocolBroadcastMessage<N> {
-    /// Encodes the protocol message into bytes. The message type is encoded as a single byte and
-    /// prepended to the message.
+    /// 将协议消息编码为字节。消息类型被编码为单个字节并放在消息前面。
     fn encode(&self, out: &mut dyn BufMut) {
         self.message_type.encode(out);
         self.message.encode(out);
@@ -201,123 +210,116 @@ impl<N: NetworkPrimitives> From<EthBroadcastMessage<N>> for ProtocolBroadcastMes
     }
 }
 
-/// Represents a message in the eth wire protocol, versions 66, 67, 68 and 69.
+/// 表示以太坊有线协议版本 66、67、68、69 和 70 中的消息。
 ///
-/// The ethereum wire protocol is a set of messages that are broadcast to the network in two
-/// styles:
-///  * A request message sent by a peer (such as [`GetPooledTransactions`]), and an associated
-///    response message (such as [`PooledTransactions`]).
-///  * A message that is broadcast to the network, without a corresponding request.
+/// 以太坊有线协议是一组广播到网络的消息，主要有两种风格：
+///  * 请求-响应对：由一方发起请求（如 [`GetPooledTransactions`]），另一方回复（如 [`PooledTransactions`]）。
+///    从 eth/66 开始，这些消息包含 `request_id` 以支持多路复用。
+///  * 广播消息：直接发送到网络，不需要对应的请求。
 ///
-/// The newer `eth/66` is an efficiency upgrade on top of `eth/65`, introducing a request id to
-/// correlate request-response message pairs. This allows for request multiplexing.
+/// 较新的 `eth/66` 是在 `eth/65` 基础上的效率升级，引入了请求 ID 以关联请求-响应消息对。这允许请求多路复用。
 ///
-/// The `eth/67` is based on `eth/66` but only removes two messages, [`GetNodeData`] and
-/// [`NodeData`].
+/// `eth/67` 基于 `eth/66`，但仅删除了两条消息：[`GetNodeData`] 和 [`NodeData`]。
 ///
-/// The `eth/68` changes only `NewPooledTransactionHashes` to include `types` and `sized`. For
-/// it, `NewPooledTransactionHashes` is renamed as [`NewPooledTransactionHashes66`] and
-/// [`NewPooledTransactionHashes68`] is defined.
+/// `eth/68` 仅更改了 `NewPooledTransactionHashes` 以包含 `types` 和 `sizes`。为此，
+/// `NewPooledTransactionHashes` 被重命名为 [`NewPooledTransactionHashes66`]，
+/// 并定义了 [`NewPooledTransactionHashes68`]。
 ///
-/// The `eth/69` announces the historical block range served by the node. Removes total difficulty
-/// information. And removes the Bloom field from receipts transferred over the protocol.
+/// `eth/69` 宣告了节点服务的历史区块范围。删除了总难度信息。并从协议传输的收据中删除了布隆过滤器字段。
 ///
-/// The `eth/70` (EIP-7975) keeps the eth/69 status format and introduces partial receipts.
-/// requests/responses.
+/// `eth/70` (EIP-7975) 保持了 eth/69 的状态格式，并引入了部分收据的请求/响应。
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EthMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
-    /// Represents a Status message required for the protocol handshake.
+    /// 握手消息，建立连接后的第一个操作。
     Status(StatusMessage),
-    /// Represents a `NewBlockHashes` message broadcast to the network.
+    /// 广播新区块的哈希。
     NewBlockHashes(NewBlockHashes),
-    /// Represents a `NewBlock` message broadcast to the network.
+    /// 广播完整的新区块。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::NewBlockPayload: serde::Serialize + serde::de::DeserializeOwned")
     )]
     NewBlock(Box<N::NewBlockPayload>),
-    /// Represents a Transactions message broadcast to the network.
+    /// 广播新交易。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::BroadcastedTransaction: serde::Serialize + serde::de::DeserializeOwned")
     )]
     Transactions(Transactions<N::BroadcastedTransaction>),
-    /// Represents a `NewPooledTransactionHashes` message for eth/66 version.
+    /// eth/66 版本的交易池哈希广播。
     NewPooledTransactionHashes66(NewPooledTransactionHashes66),
-    /// Represents a `NewPooledTransactionHashes` message for eth/68 version.
+    /// eth/68 版本的交易池哈希广播（增加了类型和大小）。
     NewPooledTransactionHashes68(NewPooledTransactionHashes68),
-    // The following messages are request-response message pairs
-    /// Represents a `GetBlockHeaders` request-response pair.
+    // 以下消息是请求-响应消息对
+    /// 表示 `GetBlockHeaders` 请求-响应对。
     GetBlockHeaders(RequestPair<GetBlockHeaders>),
-    /// Represents a `BlockHeaders` request-response pair.
+    /// 表示 `BlockHeaders` 请求-响应对。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::BlockHeader: serde::Serialize + serde::de::DeserializeOwned")
     )]
     BlockHeaders(RequestPair<BlockHeaders<N::BlockHeader>>),
-    /// Represents a `GetBlockBodies` request-response pair.
+    /// 表示 `GetBlockBodies` 请求-响应对。
     GetBlockBodies(RequestPair<GetBlockBodies>),
-    /// Represents a `BlockBodies` request-response pair.
+    /// 表示 `BlockBodies` 请求-响应对。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::BlockBody: serde::Serialize + serde::de::DeserializeOwned")
     )]
     BlockBodies(RequestPair<BlockBodies<N::BlockBody>>),
-    /// Represents a `GetPooledTransactions` request-response pair.
+    /// 表示 `GetPooledTransactions` 请求-响应对。
     GetPooledTransactions(RequestPair<GetPooledTransactions>),
-    /// Represents a `PooledTransactions` request-response pair.
+    /// 表示 `PooledTransactions` 请求-响应对。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::PooledTransaction: serde::Serialize + serde::de::DeserializeOwned")
     )]
     PooledTransactions(RequestPair<PooledTransactions<N::PooledTransaction>>),
-    /// Represents a `GetNodeData` request-response pair.
+    /// 表示 `GetNodeData` 请求-响应对（eth/67 废弃）。
     GetNodeData(RequestPair<GetNodeData>),
-    /// Represents a `NodeData` request-response pair.
+    /// 表示 `NodeData` 请求-响应对（eth/67 废弃）。
     NodeData(RequestPair<NodeData>),
-    /// Represents a `GetReceipts` request-response pair.
+    /// 表示 `GetReceipts` 请求-响应对。
     GetReceipts(RequestPair<GetReceipts>),
-    /// Represents a `GetReceipts` request for eth/70.
+    /// 表示 eth/70 的 `GetReceipts` 请求。
     ///
-    /// Note: Unlike earlier protocol versions, the eth/70 encoding for
-    /// `GetReceipts` in EIP-7975 inlines the request id. The type still wraps
-    /// a [`RequestPair`], but with a custom inline encoding.
+    /// 注意：与早期协议版本不同，EIP-7975 中 eth/70 编码的 `GetReceipts` 内联了请求 ID。
+    /// 该类型仍然包装了一个 [`RequestPair`]，但使用了自定义的内联编码。
     GetReceipts70(RequestPair<GetReceipts70>),
-    /// Represents a Receipts request-response pair.
+    /// 表示 `Receipts` 请求-响应对。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::Receipt: serde::Serialize + serde::de::DeserializeOwned")
     )]
     Receipts(RequestPair<Receipts<N::Receipt>>),
-    /// Represents a Receipts request-response pair for eth/69.
+    /// 表示 eth/69 的 `Receipts` 请求-响应对（不含布隆过滤器）。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::Receipt: serde::Serialize + serde::de::DeserializeOwned")
     )]
     Receipts69(RequestPair<Receipts69<N::Receipt>>),
-    /// Represents a Receipts request-response pair for eth/70.
+    /// 表示 eth/70 的 `Receipts` 请求-响应对（包含 lastBlockIncomplete 标志）。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::Receipt: serde::Serialize + serde::de::DeserializeOwned")
     )]
     ///
-    /// Note: The eth/70 encoding for `Receipts` in EIP-7975 inlines the
-    /// request id. The type still wraps a [`RequestPair`], but with a custom
-    /// inline encoding.
+    /// 注意：EIP-7975 中 eth/70 编码的 `Receipts` 内联了请求 ID。
+    /// 该类型仍然包装了一个 [`RequestPair`]，但使用了自定义的内联编码。
     Receipts70(RequestPair<Receipts70<N::Receipt>>),
-    /// Represents a `BlockRangeUpdate` message broadcast to the network.
+    /// 表示广播到网络的 `BlockRangeUpdate` 消息。
     #[cfg_attr(
         feature = "serde",
         serde(bound = "N::BroadcastedTransaction: serde::Serialize + serde::de::DeserializeOwned")
     )]
     BlockRangeUpdate(BlockRangeUpdate),
-    /// Represents an encoded message that doesn't match any other variant
+    /// 表示不匹配任何其他变体的编码消息。
     Other(RawCapabilityMessage),
 }
 
 impl<N: NetworkPrimitives> EthMessage<N> {
-    /// Returns the message's ID.
+    /// 返回消息的 ID。
     pub const fn message_id(&self) -> EthMessageID {
         match self {
             Self::Status(_) => EthMessageID::Status,
@@ -342,7 +344,7 @@ impl<N: NetworkPrimitives> EthMessage<N> {
         }
     }
 
-    /// Returns true if the message variant is a request.
+    /// 如果消息变体是请求，则返回 true。
     pub const fn is_request(&self) -> bool {
         matches!(
             self,
@@ -355,7 +357,7 @@ impl<N: NetworkPrimitives> EthMessage<N> {
         )
     }
 
-    /// Returns true if the message variant is a response to a request.
+    /// 如果消息变体是对请求的响应，则返回 true。
     pub const fn is_response(&self) -> bool {
         matches!(
             self,
@@ -369,14 +371,12 @@ impl<N: NetworkPrimitives> EthMessage<N> {
         )
     }
 
-    /// Converts the message types where applicable.
+    /// 在适用时转换消息类型。
     ///
-    /// This handles up/downcasting where appropriate, for example for different receipt request
-    /// types.
+    /// 处理向上/向下转型，例如对于不同的收据请求类型。
     pub fn map_versioned(self, version: EthVersion) -> Self {
-        // For eth/70 peers we send `GetReceipts` using the new eth/70
-        // encoding with `firstBlockReceiptIndex = 0`, while keeping the
-        // user-facing `PeerRequest` API unchanged.
+        // 对于 eth/70 对等节点，我们使用新的 eth/70 编码发送 `GetReceipts`，
+        // 并设置 `firstBlockReceiptIndex = 0`，同时保持面向用户的 `PeerRequest` API 不变。
         if version >= EthVersion::Eth70 {
             return match self {
                 Self::GetReceipts(pair) => {
@@ -451,25 +451,23 @@ impl<N: NetworkPrimitives> Encodable for EthMessage<N> {
     }
 }
 
-/// Represents broadcast messages of [`EthMessage`] with the same object that can be sent to
-/// multiple peers.
+/// 表示 [`EthMessage`] 的广播消息，使用同一个对象可以发送给多个对等节点。
 ///
-/// Messages that contain a list of hashes depend on the peer the message is sent to. A peer should
-/// never receive a hash of an object (block, transaction) it has already seen.
+/// 包含哈希列表的消息取决于消息发送给哪个对等节点。对等节点永远不应接收它已经见过的对象（区块、交易）的哈希。
 ///
-/// Note: This is only useful for outgoing messages.
+/// 注意：这仅对传出消息有用。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EthBroadcastMessage<N: NetworkPrimitives = EthNetworkPrimitives> {
-    /// Represents a new block broadcast message.
+    /// 表示新区块广播消息。
     NewBlock(Arc<N::NewBlockPayload>),
-    /// Represents a transactions broadcast message.
+    /// 表示交易广播消息。
     Transactions(SharedTransactions<N::BroadcastedTransaction>),
 }
 
 // === impl EthBroadcastMessage ===
 
 impl<N: NetworkPrimitives> EthBroadcastMessage<N> {
-    /// Returns the message's ID.
+    /// 返回消息的 ID。
     pub const fn message_id(&self) -> EthMessageID {
         match self {
             Self::NewBlock(_) => EthMessageID::NewBlock,
@@ -494,51 +492,51 @@ impl<N: NetworkPrimitives> Encodable for EthBroadcastMessage<N> {
     }
 }
 
-/// Represents message IDs for eth protocol messages.
+/// 表示以太坊协议消息的消息 ID。
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EthMessageID {
-    /// Status message.
+    /// 状态消息。
     Status = 0x00,
-    /// New block hashes message.
+    /// 新区块哈希消息。
     NewBlockHashes = 0x01,
-    /// Transactions message.
+    /// 交易消息。
     Transactions = 0x02,
-    /// Get block headers message.
+    /// 获取区块头消息。
     GetBlockHeaders = 0x03,
-    /// Block headers message.
+    /// 区块头消息。
     BlockHeaders = 0x04,
-    /// Get block bodies message.
+    /// 获取区块体消息。
     GetBlockBodies = 0x05,
-    /// Block bodies message.
+    /// 区块体消息。
     BlockBodies = 0x06,
-    /// New block message.
+    /// 新区块消息。
     NewBlock = 0x07,
-    /// New pooled transaction hashes message.
+    /// 新池交易哈希消息。
     NewPooledTransactionHashes = 0x08,
-    /// Requests pooled transactions.
+    /// 请求池交易。
     GetPooledTransactions = 0x09,
-    /// Represents pooled transactions.
+    /// 表示池交易。
     PooledTransactions = 0x0a,
-    /// Requests node data.
+    /// 请求节点数据（eth/67 废弃）。
     GetNodeData = 0x0d,
-    /// Represents node data.
+    /// 表示节点数据（eth/67 废弃）。
     NodeData = 0x0e,
-    /// Requests receipts.
+    /// 请求收据。
     GetReceipts = 0x0f,
-    /// Represents receipts.
+    /// 表示收据。
     Receipts = 0x10,
-    /// Block range update.
+    /// 区块范围更新。
     ///
-    /// Introduced in Eth69
+    /// 在 Eth69 中引入。
     BlockRangeUpdate = 0x11,
-    /// Represents unknown message types.
+    /// 表示未知的消息类型。
     Other(u8),
 }
 
 impl EthMessageID {
-    /// Returns the corresponding `u8` value for an `EthMessageID`.
+    /// 返回 `EthMessageID` 对应的 `u8` 值。
     pub const fn to_u8(&self) -> u8 {
         match self {
             Self::Status => 0x00,
@@ -557,11 +555,11 @@ impl EthMessageID {
             Self::GetReceipts => 0x0f,
             Self::Receipts => 0x10,
             Self::BlockRangeUpdate => 0x11,
-            Self::Other(value) => *value, // Return the stored `u8`
+            Self::Other(value) => *value,
         }
     }
 
-    /// Returns the max value for the given version.
+    /// 返回给定协议版本的最大 ID 值。
     pub const fn max(version: EthVersion) -> u8 {
         if version.is_eth69() {
             Self::BlockRangeUpdate.to_u8()
@@ -570,9 +568,9 @@ impl EthMessageID {
         }
     }
 
-    /// Returns the total number of message types for the given version.
+    /// 返回给定协议版本的消息类型总数。
     ///
-    /// This is used for message ID multiplexing.
+    /// 这用于消息 ID 多路复用。
     ///
     /// <https://github.com/ethereum/go-ethereum/blob/85077be58edea572f29c3b1a6a055077f1a56a8b/eth/protocols/eth/protocol.go#L45-L47>
     pub const fn message_count(version: EthVersion) -> u8 {
@@ -641,22 +639,21 @@ impl TryFrom<usize> for EthMessageID {
     }
 }
 
-/// This is used for all request-response style `eth` protocol messages.
-/// This can represent either a request or a response, since both include a message payload and
-/// request id.
+/// 这用于所有请求-响应风格的 `eth` 协议消息。
+/// 这可以表示请求或响应，因为两者都包含消息负载和请求 ID。
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct RequestPair<T> {
-    /// id for the contained request or response message
+    /// 包含的请求或响应消息的 ID。
     pub request_id: u64,
 
-    /// the request or response message payload
+    /// 请求或响应消息的负载。
     pub message: T,
 }
 
 impl<T> RequestPair<T> {
-    /// Converts the message type with the given closure.
+    /// 使用给定的闭包转换消息类型。
     pub fn map<F, R>(self, f: F) -> RequestPair<R>
     where
         F: FnOnce(T) -> R,
@@ -666,7 +663,7 @@ impl<T> RequestPair<T> {
     }
 }
 
-/// Allows messages with request ids to be serialized into RLP bytes.
+/// 允许带有请求 ID 的消息序列化为 RLP 字节。
 impl<T> Encodable for RequestPair<T>
 where
     T: Encodable,
@@ -689,7 +686,7 @@ where
     }
 }
 
-/// Allows messages with request ids to be deserialized into RLP bytes.
+/// 允许带有请求 ID 的消息反序列化为 RLP 字节。
 impl<T> Decodable for RequestPair<T>
 where
     T: Decodable,
@@ -701,8 +698,7 @@ where
         let request_id = u64::decode(buf)?;
         let message = T::decode(buf)?;
 
-        // Check that the buffer consumed exactly payload_length bytes after decoding the
-        // RequestPair
+        // 检查解码 RequestPair 后缓冲区是否正好消耗了 payload_length 字节
         let consumed_len = initial_length - buf.len();
         if consumed_len != header.payload_length {
             return Err(alloy_rlp::Error::UnexpectedLength)
@@ -762,11 +758,11 @@ mod tests {
     fn request_pair_encode() {
         let request_pair = RequestPair { request_id: 1337, message: vec![5u8] };
 
-        // c5: start of list (c0) + len(full_list) (length is <55 bytes)
+        // c5: 列表开始 (c0) + len(full_list) (长度 <55 字节)
         // 82: 0x80 + len(1337)
         // 05 39: 1337 (request_id)
         // === full_list ===
-        // c1: start of list (c0) + len(list) (length is <55 bytes)
+        // c1: 列表开始 (c0) + len(list) (长度 <55 字节)
         // 05: 5 (message)
         let expected = hex!("c5820539c105");
         let got = encode(request_pair);
@@ -786,15 +782,7 @@ mod tests {
 
     #[test]
     fn malicious_request_pair_decode() {
-        // A maliciously encoded request pair, where the len(full_list) is 5, but it
-        // actually consumes 6 bytes when decoding
-        //
-        // c5: start of list (c0) + len(full_list) (length is <55 bytes)
-        // 82: 0x80 + len(1337)
-        // 05 39: 1337 (request_id)
-        // === full_list ===
-        // c2: start of list (c0) + len(list) (length is <55 bytes)
-        // 05 05: 5 5(message)
+        // 一个恶意编码的请求对，其中 len(full_list) 为 5，但解码时实际消耗了 6 个字节
         let raw_pair = &hex!("c5820539c20505")[..];
 
         let result = RequestPair::<Vec<u8>>::decode(&mut &*raw_pair);

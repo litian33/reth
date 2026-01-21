@@ -1,4 +1,4 @@
-//! Configuration files.
+//! 配置文件相关定义。
 use reth_network_types::{PeersConfig, SessionsConfig};
 use reth_prune_types::PruneModes;
 use reth_stages_types::ExecutionStageThresholds;
@@ -12,30 +12,30 @@ use url::Url;
 #[cfg(feature = "serde")]
 const EXTENSION: &str = "toml";
 
-/// The default prune block interval
+/// 默认的裁剪（prune）区块间隔。
 pub const DEFAULT_BLOCK_INTERVAL: usize = 5;
 
-/// Configuration for the reth node.
+/// reth 节点配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
-    /// Configuration for each stage in the pipeline.
+    /// 流水线（pipeline）中各个阶段（stage）的配置。
     pub stages: StageConfig,
-    /// Configuration for pruning.
+    /// 裁剪（prune）相关配置。
     #[cfg_attr(feature = "serde", serde(default))]
     pub prune: PruneConfig,
-    /// Configuration for the discovery service.
+    /// 节点发现（discovery）服务的配置。
     pub peers: PeersConfig,
-    /// Configuration for peer sessions.
+    /// 对等节点（peer）会话配置。
     pub sessions: SessionsConfig,
-    /// Configuration for static files.
+    /// 静态文件（static files）配置。
     #[cfg_attr(feature = "serde", serde(default))]
     pub static_files: StaticFilesConfig,
 }
 
 impl Config {
-    /// Sets the pruning configuration.
+    /// 设置裁剪（prune）配置。
     pub fn set_prune_config(&mut self, prune_config: PruneConfig) {
         self.prune = prune_config;
     }
@@ -43,10 +43,9 @@ impl Config {
 
 #[cfg(feature = "serde")]
 impl Config {
-    /// Load a [`Config`] from a specified path.
+    /// 从指定路径加载 [`Config`]。
     ///
-    /// A new configuration file is created with default values if none
-    /// exists.
+    /// 如果配置文件不存在，会创建一个包含默认值的新配置文件。
     pub fn from_path(path: impl AsRef<Path>) -> eyre::Result<Self> {
         let path = path.as_ref();
         match std::fs::read_to_string(path) {
@@ -69,9 +68,9 @@ impl Config {
         }
     }
 
-    /// Returns the [`PeersConfig`] for the node.
+    /// 返回节点的 [`PeersConfig`]。
     ///
-    /// If a peers file is provided, the basic nodes from the file are added to the configuration.
+    /// 如果提供了 peers 文件，则会将文件里的 basic nodes 合并到配置中。
     pub fn peers_config_with_basic_nodes_from_file(
         &self,
         peers_file: Option<&Path>,
@@ -82,7 +81,7 @@ impl Config {
             .unwrap_or_else(|_| self.peers.clone())
     }
 
-    /// Save the configuration to toml file.
+    /// 将配置保存为 toml 文件。
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
         if path.extension() != Some(std::ffi::OsStr::new(EXTENSION)) {
             return Err(std::io::Error::new(
@@ -99,44 +98,44 @@ impl Config {
     }
 }
 
-/// Configuration for each stage in the pipeline.
+/// 流水线（pipeline）中各个阶段（stage）的配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct StageConfig {
-    /// ERA stage configuration.
+    /// ERA 阶段配置。
     pub era: EraConfig,
-    /// Header stage configuration.
+    /// Header 阶段配置。
     pub headers: HeadersConfig,
-    /// Body stage configuration.
+    /// Body 阶段配置。
     pub bodies: BodiesConfig,
-    /// Sender Recovery stage configuration.
+    /// Sender Recovery 阶段配置。
     pub sender_recovery: SenderRecoveryConfig,
-    /// Execution stage configuration.
+    /// Execution 阶段配置。
     pub execution: ExecutionConfig,
-    /// Prune stage configuration.
+    /// Prune 阶段配置。
     pub prune: PruneStageConfig,
-    /// Account Hashing stage configuration.
+    /// Account Hashing 阶段配置。
     pub account_hashing: HashingConfig,
-    /// Storage Hashing stage configuration.
+    /// Storage Hashing 阶段配置。
     pub storage_hashing: HashingConfig,
-    /// Merkle stage configuration.
+    /// Merkle 阶段配置。
     pub merkle: MerkleConfig,
-    /// Transaction Lookup stage configuration.
+    /// Transaction Lookup 阶段配置。
     pub transaction_lookup: TransactionLookupConfig,
-    /// Index Account History stage configuration.
+    /// Index Account History 阶段配置。
     pub index_account_history: IndexHistoryConfig,
-    /// Index Storage History stage configuration.
+    /// Index Storage History 阶段配置。
     pub index_storage_history: IndexHistoryConfig,
-    /// Common ETL related configuration.
+    /// 通用 ETL 相关配置。
     pub etl: EtlConfig,
 }
 
 impl StageConfig {
-    /// The highest threshold (in number of blocks) for switching between incremental and full
-    /// calculations across `MerkleStage`, `AccountHashingStage` and `StorageHashingStage`. This is
-    /// required to figure out if can prune or not changesets on subsequent pipeline runs during
-    /// `ExecutionStage`
+    /// 在 `MerkleStage`、`AccountHashingStage`、`StorageHashingStage` 三者之间切换“增量计算/全量计算”
+    /// 时使用的最高阈值（按区块数计）。
+    ///
+    /// 该值用于在后续 pipeline 运行的 `ExecutionStage` 中判断是否可以裁剪（prune）changesets。
     pub fn execution_external_clean_threshold(&self) -> u64 {
         self.merkle
             .incremental_threshold
@@ -145,52 +144,51 @@ impl StageConfig {
     }
 }
 
-/// ERA stage configuration.
+/// ERA stage 配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct EraConfig {
-    /// Path to a local directory where ERA1 files are located.
+    /// 本地 ERA1 文件所在目录路径。
     ///
-    /// Conflicts with `url`.
+    /// 与 `url` 冲突（不可同时设置）。
     pub path: Option<PathBuf>,
-    /// The base URL of an ERA1 file host to download from.
+    /// 用于下载 ERA1 文件的主机基础 URL。
     ///
-    /// Conflicts with `path`.
+    /// 与 `path` 冲突（不可同时设置）。
     pub url: Option<Url>,
-    /// Path to a directory where files downloaded from `url` will be stored until processed.
+    /// 从 `url` 下载的文件在被处理前的临时保存目录。
     ///
-    /// Required for `url`.
+    /// 当设置了 `url` 时必须提供。
     pub folder: Option<PathBuf>,
 }
 
 impl EraConfig {
-    /// Sets `folder` for temporary downloads as a directory called "era" inside `dir`.
+    /// 将临时下载目录 `folder` 设置为 `dir` 下名为 "era" 的子目录。
     pub fn with_datadir(mut self, dir: impl AsRef<Path>) -> Self {
         self.folder = Some(dir.as_ref().join("era"));
         self
     }
 }
 
-/// Header stage configuration.
+/// Header stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct HeadersConfig {
-    /// The maximum number of requests to send concurrently.
+    /// 并发发送请求的最大数量。
     ///
-    /// Default: 100
+    /// 默认：100
     pub downloader_max_concurrent_requests: usize,
-    /// The minimum number of requests to send concurrently.
+    /// 并发发送请求的最小数量。
     ///
-    /// Default: 5
+    /// 默认：5
     pub downloader_min_concurrent_requests: usize,
-    /// Maximum amount of responses to buffer internally.
-    /// The response contains multiple headers.
+    /// 内部最多缓存的响应数量（每个响应可能包含多个 headers）。
     pub downloader_max_buffered_responses: usize,
-    /// The maximum number of headers to request from a peer at a time.
+    /// 单次向某个 peer 请求的最大 header 数量。
     pub downloader_request_limit: u64,
-    /// The maximum number of headers to download before committing progress to the database.
+    /// 在将进度提交到数据库前，最多下载的 header 数量。
     pub commit_threshold: u64,
 }
 
@@ -206,31 +204,30 @@ impl Default for HeadersConfig {
     }
 }
 
-/// Body stage configuration.
+/// Body stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct BodiesConfig {
-    /// The batch size of non-empty blocks per one request
+    /// 每次请求中“非空区块”的批量大小。
     ///
-    /// Default: 200
+    /// 默认：200
     pub downloader_request_limit: u64,
-    /// The maximum number of block bodies returned at once from the stream
+    /// 流式返回时一次返回的区块体（block body）最大数量。
     ///
-    /// Default: `1_000`
+    /// 默认：`1_000`
     pub downloader_stream_batch_size: usize,
-    /// The size of the internal block buffer in bytes.
+    /// 内部区块缓冲区大小（字节）。
     ///
-    /// Default: 2GB
+    /// 默认：2GB
     pub downloader_max_buffered_blocks_size_bytes: usize,
-    /// The minimum number of requests to send concurrently.
+    /// 并发发送请求的最小数量。
     ///
-    /// Default: 5
+    /// 默认：5
     pub downloader_min_concurrent_requests: usize,
-    /// The maximum number of requests to send concurrently.
-    /// This is equal to the max number of peers.
+    /// 并发发送请求的最大数量（等于最大 peer 数）。
     ///
-    /// Default: 100
+    /// 默认：100
     pub downloader_max_concurrent_requests: usize,
 }
 
@@ -239,19 +236,19 @@ impl Default for BodiesConfig {
         Self {
             downloader_request_limit: 200,
             downloader_stream_batch_size: 1_000,
-            downloader_max_buffered_blocks_size_bytes: 2 * 1024 * 1024 * 1024, // ~2GB
+            downloader_max_buffered_blocks_size_bytes: 2 * 1024 * 1024 * 1024, // 约 2GB
             downloader_min_concurrent_requests: 5,
             downloader_max_concurrent_requests: 100,
         }
     }
 }
 
-/// Sender recovery stage configuration.
+/// Sender recovery stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct SenderRecoveryConfig {
-    /// The maximum number of transactions to process before committing progress to the database.
+    /// 在将进度提交到数据库前，最多处理的交易数量。
     pub commit_threshold: u64,
 }
 
@@ -261,18 +258,18 @@ impl Default for SenderRecoveryConfig {
     }
 }
 
-/// Execution stage configuration.
+/// Execution stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct ExecutionConfig {
-    /// The maximum number of blocks to process before the execution stage commits.
+    /// 在提交前最多处理的区块数量。
     pub max_blocks: Option<u64>,
-    /// The maximum number of state changes to keep in memory before the execution stage commits.
+    /// 在提交前最多保留在内存中的状态变更数量。
     pub max_changes: Option<u64>,
-    /// The maximum cumulative amount of gas to process before the execution stage commits.
+    /// 在提交前最多处理的累计 gas 总量。
     pub max_cumulative_gas: Option<u64>,
-    /// The maximum time spent on blocks processing before the execution stage commits.
+    /// 在提交前最多用于处理区块的时间。
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -288,9 +285,9 @@ impl Default for ExecutionConfig {
         Self {
             max_blocks: Some(500_000),
             max_changes: Some(5_000_000),
-            // 50k full blocks of 30M gas
+            // 5 万个 3000 万 gas 的完整区块
             max_cumulative_gas: Some(30_000_000 * 50_000),
-            // 10 minutes
+            // 10 分钟
             max_duration: Some(Duration::from_secs(10 * 60)),
         }
     }
@@ -307,12 +304,12 @@ impl From<ExecutionConfig> for ExecutionStageThresholds {
     }
 }
 
-/// Prune stage configuration.
+/// Prune stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct PruneStageConfig {
-    /// The maximum number of entries to prune before committing progress to the database.
+    /// 在将进度提交到数据库前，最多裁剪的条目数量。
     pub commit_threshold: usize,
 }
 
@@ -322,15 +319,14 @@ impl Default for PruneStageConfig {
     }
 }
 
-/// Hashing stage configuration.
+/// Hashing stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct HashingConfig {
-    /// The threshold (in number of blocks) for switching between
-    /// incremental hashing and full hashing.
+    /// 在“增量 hashing / 全量 hashing”之间切换的阈值（按区块数计）。
     pub clean_threshold: u64,
-    /// The maximum number of entities to process before committing progress to the database.
+    /// 在将进度提交到数据库前，最多处理的实体数量。
     pub commit_threshold: u64,
 }
 
@@ -340,21 +336,17 @@ impl Default for HashingConfig {
     }
 }
 
-/// Merkle stage configuration.
+/// Merkle stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct MerkleConfig {
-    /// The number of blocks we will run the incremental root method for when we are catching up on
-    /// the merkle stage for a large number of blocks.
+    /// 当 merkle stage 需要追赶大量区块时，连续使用“增量 root”方法的区块数量。
     ///
-    /// When we are catching up for a large number of blocks, we can only run the incremental root
-    /// for a limited number of blocks, otherwise the incremental root method may cause the node to
-    /// OOM. This number determines how many blocks in a row we will run the incremental root
-    /// method for.
+    /// 当追赶的区块很多时，“增量 root”只能在有限的区块范围内使用，否则可能导致节点 OOM。
+    /// 该值决定了我们会连续运行多少个区块的增量 root 方法。
     pub incremental_threshold: u64,
-    /// The threshold (in number of blocks) for switching from incremental trie building of changes
-    /// to whole rebuild.
+    /// 从“基于变更的增量 trie 构建”切换到“全量重建”的阈值（按区块数计）。
     pub rebuild_threshold: u64,
 }
 
@@ -364,12 +356,12 @@ impl Default for MerkleConfig {
     }
 }
 
-/// Transaction Lookup stage configuration.
+/// Transaction Lookup stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct TransactionLookupConfig {
-    /// The maximum number of transactions to process before writing to disk.
+    /// 写入磁盘前最多处理的交易数量。
     pub chunk_size: u64,
 }
 
@@ -379,14 +371,14 @@ impl Default for TransactionLookupConfig {
     }
 }
 
-/// Common ETL related configuration.
+/// 通用 ETL 相关配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct EtlConfig {
-    /// Data directory where temporary files are created.
+    /// 创建临时文件的数据目录。
     pub dir: Option<PathBuf>,
-    /// The maximum size in bytes of data held in memory before being flushed to disk as a file.
+    /// 在刷写到磁盘文件之前，允许驻留在内存中的数据最大值（字节）。
     pub file_size: usize,
 }
 
@@ -397,53 +389,53 @@ impl Default for EtlConfig {
 }
 
 impl EtlConfig {
-    /// Creates an ETL configuration
+    /// 创建一个 ETL 配置。
     pub const fn new(dir: Option<PathBuf>, file_size: usize) -> Self {
         Self { dir, file_size }
     }
 
-    /// Return default ETL directory from datadir path.
+    /// 根据 datadir 路径返回默认的 ETL 目录。
     pub fn from_datadir(path: &Path) -> PathBuf {
         path.join("etl-tmp")
     }
 
-    /// Default size in bytes of data held in memory before being flushed to disk as a file.
+    /// 在刷写到磁盘文件之前，默认允许驻留在内存中的数据大小（字节）。
     pub const fn default_file_size() -> usize {
         // 500 MB
         500 * (1024 * 1024)
     }
 }
 
-/// Static files configuration.
+/// 静态文件（static files）配置。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct StaticFilesConfig {
-    /// Number of blocks per file for each segment.
+    /// 每个 segment 的“每个文件包含的区块数”配置。
     pub blocks_per_file: BlocksPerFileConfig,
 }
 
-/// Configuration for the number of blocks per file for each segment.
+/// 各个 segment 的“每个文件包含的区块数”配置。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct BlocksPerFileConfig {
-    /// Number of blocks per file for the headers segment.
+    /// headers segment 的每文件区块数。
     pub headers: Option<u64>,
-    /// Number of blocks per file for the transactions segment.
+    /// transactions segment 的每文件区块数。
     pub transactions: Option<u64>,
-    /// Number of blocks per file for the receipts segment.
+    /// receipts segment 的每文件区块数。
     pub receipts: Option<u64>,
-    /// Number of blocks per file for the transaction senders segment.
+    /// transaction senders segment 的每文件区块数。
     pub transaction_senders: Option<u64>,
-    /// Number of blocks per file for the account changesets segment.
+    /// account changesets segment 的每文件区块数。
     pub account_change_sets: Option<u64>,
 }
 
 impl StaticFilesConfig {
-    /// Validates the static files configuration.
+    /// 校验静态文件配置。
     ///
-    /// Returns an error if any blocks per file value is zero.
+    /// 如果任意“每文件区块数”为 0，则返回错误。
     pub fn validate(&self) -> eyre::Result<()> {
         let BlocksPerFileConfig {
             headers,
@@ -472,7 +464,7 @@ impl StaticFilesConfig {
         Ok(())
     }
 
-    /// Converts the blocks per file configuration into a [`StaticFileMap`].
+    /// 将 blocks-per-file 配置转换为 [`StaticFileMap`]。
     pub fn as_blocks_per_file_map(&self) -> StaticFileMap<u64> {
         let BlocksPerFileConfig {
             headers,
@@ -483,8 +475,7 @@ impl StaticFilesConfig {
         } = self.blocks_per_file;
 
         let mut map = StaticFileMap::default();
-        // Iterating over all possible segments allows us to do an exhaustive match here,
-        // to not forget to configure new segments in the future.
+        // 遍历所有可能的 segment，保证这里的 match 是穷尽的，避免未来新增 segment 时忘记配置。
         for segment in StaticFileSegment::iter() {
             let blocks_per_file = match segment {
                 StaticFileSegment::Headers => headers,
@@ -502,12 +493,12 @@ impl StaticFilesConfig {
     }
 }
 
-/// History stage configuration.
+/// History stage 配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct IndexHistoryConfig {
-    /// The maximum number of blocks to process before committing progress to the database.
+    /// 在将进度提交到数据库前，最多处理的区块数量。
     pub commit_threshold: u64,
 }
 
@@ -517,14 +508,14 @@ impl Default for IndexHistoryConfig {
     }
 }
 
-/// Pruning configuration.
+/// 裁剪（prune）配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct PruneConfig {
-    /// Minimum pruning interval measured in blocks.
+    /// 最小裁剪间隔（按区块数计）。
     pub block_interval: usize,
-    /// Pruning configuration for every part of the data that can be pruned.
+    /// 可裁剪数据各个部分的裁剪策略配置。
     #[cfg_attr(feature = "serde", serde(alias = "parts"))]
     pub segments: PruneModes,
 }
@@ -536,21 +527,20 @@ impl Default for PruneConfig {
 }
 
 impl PruneConfig {
-    /// Returns whether this configuration is the default one.
+    /// 判断当前配置是否为默认配置。
     pub fn is_default(&self) -> bool {
         self == &Self::default()
     }
 
-    /// Returns whether there is any kind of receipt pruning configuration.
+    /// 判断是否存在任何 receipts 裁剪相关配置。
     pub fn has_receipts_pruning(&self) -> bool {
         self.segments.has_receipts_pruning()
     }
 
-    /// Merges values from `other` into `self`.
-    /// - `Option<PruneMode>` fields: set from `other` only if `self` is `None`.
-    /// - `block_interval`: set from `other` only if `self.block_interval ==
-    ///   DEFAULT_BLOCK_INTERVAL`.
-    /// - `receipts_log_filter`: set from `other` only if `self` is empty and `other` is non-empty.
+    /// 将 `other` 的值合并到 `self` 中。
+    /// - `Option<PruneMode>` 字段：仅当 `self` 为 `None` 时，才从 `other` 赋值。
+    /// - `block_interval`：仅当 `self.block_interval == DEFAULT_BLOCK_INTERVAL` 时，才从 `other` 赋值。
+    /// - `receipts_log_filter`：仅当 `self` 为空且 `other` 非空时，才从 `other` 赋值。
     pub fn merge(&mut self, other: Self) {
         let Self {
             block_interval,
@@ -566,12 +556,12 @@ impl PruneConfig {
                 },
         } = other;
 
-        // Merge block_interval, only update if it's the default interval
+        // 合并 block_interval：仅当当前仍为默认值时才更新
         if self.block_interval == DEFAULT_BLOCK_INTERVAL {
             self.block_interval = block_interval;
         }
 
-        // Merge the various segment prune modes
+        // 合并各个 segment 的裁剪模式（prune mode）
         self.segments.sender_recovery = self.segments.sender_recovery.or(sender_recovery);
         self.segments.transaction_lookup = self.segments.transaction_lookup.or(transaction_lookup);
         self.segments.receipts = self.segments.receipts.or(receipts);
@@ -585,7 +575,7 @@ impl PruneConfig {
     }
 }
 
-/// Helper type to support older versions of Duration deserialization.
+/// 用于兼容旧版本 `Duration` 反序列化格式的辅助类型。
 #[cfg(feature = "serde")]
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
 where
@@ -622,14 +612,14 @@ mod tests {
         temp_dir.close().unwrap()
     }
 
-    /// Run a test function with a temporary config path as fixture.
+    /// 使用临时的配置文件路径作为夹具（fixture）来运行测试函数。
     fn with_config_path(test_fn: fn(&Path)) {
-        // Create a temporary directory for the config file
+        // 为配置文件创建临时目录
         let config_dir = tempfile::tempdir().expect("creating test fixture failed");
-        // Create the config file path
+        // 生成配置文件路径
         let config_path =
             config_dir.path().join("example-app").join("example-config").with_extension("toml");
-        // Run the test function with the config path
+        // 以该配置路径运行测试函数
         test_fn(&config_path);
         config_dir.close().expect("removing test fixture failed");
     }
@@ -647,16 +637,16 @@ mod tests {
         with_config_path(|path| {
             let config = Config::default();
 
-            // Create the parent directory if it doesn't exist
+            // 如果父目录不存在则创建
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).expect("Failed to create directories");
             }
 
-            // Write the config to the file
+            // 将配置写入文件
             std::fs::write(path, toml::to_string(&config).unwrap())
                 .expect("Failed to write config");
 
-            // Load the config from the file and compare it
+            // 从文件加载配置并对比
             let loaded = Config::from_path(path).expect("load_path failed");
             assert_eq!(config, loaded);
         })
@@ -667,15 +657,15 @@ mod tests {
         with_config_path(|path| {
             let invalid_toml = "invalid toml data";
 
-            // Create the parent directory if it doesn't exist
+            // 如果父目录不存在则创建
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).expect("Failed to create directories");
             }
 
-            // Write invalid TOML data to the file
+            // 写入非法 TOML 数据
             std::fs::write(path, invalid_toml).expect("Failed to write invalid TOML");
 
-            // Attempt to load the config should fail
+            // 尝试加载配置应当失败
             let result = Config::from_path(path);
             assert!(result.is_err());
         })
@@ -684,15 +674,15 @@ mod tests {
     #[test]
     fn test_load_path_creates_directory_if_not_exists() {
         with_config_path(|path| {
-            // Ensure the directory does not exist
+            // 确保目录不存在
             let parent = path.parent().unwrap();
             assert!(!parent.exists());
 
-            // Load the configuration, which should create the directory and a default config file
+            // 加载配置：应创建目录并写入默认配置文件
             let config = Config::from_path(path).expect("load_path failed");
             assert_eq!(config, Config::default());
 
-            // The directory and file should now exist
+            // 此时目录与文件应当已存在
             assert!(parent.exists());
             assert!(path.exists());
         });
@@ -723,17 +713,17 @@ mod tests {
         with_tempdir("config-load-test", |config_path| {
             let config = Config::default();
 
-            // Write the config to a file
+            // 将配置写入文件
             std::fs::write(
                 config_path,
                 toml::to_string(&config).expect("Failed to serialize config"),
             )
             .expect("Failed to write config file");
 
-            // Load the config from the file
+            // 从文件加载配置
             let loaded_config = Config::from_path(config_path).unwrap();
 
-            // Compare the loaded config with the original config
+            // 对比加载后的配置与原始配置
             assert_eq!(config, loaded_config);
         })
     }
@@ -744,22 +734,22 @@ mod tests {
             let mut config = Config::default();
             config.stages.execution.max_duration = Some(Duration::from_secs(10 * 60));
 
-            // Write the config to a file
+            // 将配置写入文件
             std::fs::write(
                 config_path,
                 toml::to_string(&config).expect("Failed to serialize config"),
             )
             .expect("Failed to write config file");
 
-            // Load the config from the file
+            // 从文件加载配置
             let loaded_config = Config::from_path(config_path).unwrap();
 
-            // Compare the loaded config with the original config
+            // 对比加载后的配置与原始配置
             assert_eq!(config, loaded_config);
         })
     }
 
-    // ensures config deserialization is backwards compatible
+    // 确保配置反序列化对旧版本保持兼容
     #[test]
     fn test_backwards_compatibility() {
         let alpha_0_0_8 = r"#
@@ -1061,7 +1051,7 @@ nanos = 0
         let _conf: Config = toml::from_str(alpha_0_0_19).unwrap();
     }
 
-    // ensures prune config deserialization is backwards compatible
+    // 确保 prune 配置反序列化对旧版本保持兼容
     #[test]
     fn test_backwards_compatibility_prune_full() {
         let s = r"#
@@ -1113,8 +1103,7 @@ receipts = { distance = 16384 }
         let original_filter = config1.segments.receipts_log_filter.clone();
         config1.merge(config2);
 
-        // Check that the configuration has been merged. Any configuration present in config1
-        // should not be overwritten by config2
+        // 检查配置已合并：config1 中已存在的配置不应被 config2 覆盖
         assert_eq!(config1.block_interval, 10);
         assert_eq!(config1.segments.sender_recovery, Some(PruneMode::Full));
         assert_eq!(config1.segments.transaction_lookup, Some(PruneMode::Full));

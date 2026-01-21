@@ -1,13 +1,11 @@
-//! Built-in [`StageSet`]s.
+//! 内置的 [`StageSet`] 集合。
 //!
-//! The easiest set to use is [`DefaultStages`], which provides all stages required to run an
-//! instance of reth.
+//! 最简单的用法是 [`DefaultStages`]：它提供运行一个 reth 实例所需的全部 stages。
 //!
-//! It is also possible to run parts of reth standalone given the required data is present in
-//! the environment, such as [`ExecutionStages`] or [`HashingStages`].
+//! 如果运行环境中已经具备所需数据，也可以只单独运行 reth 的某些部分，例如 [`ExecutionStages`] 或
+//! [`HashingStages`]。
 //!
-//!
-//! # Examples
+//! # 示例
 //!
 //! ```no_run
 //! # use reth_stages::Pipeline;
@@ -29,7 +27,7 @@
 //! let provider_factory = create_test_provider_factory();
 //! let static_file_producer =
 //!     StaticFileProducer::new(provider_factory.clone(), PruneModes::default());
-//! // Build a pipeline with all offline stages.
+//! // 构建一个仅包含离线 stages 的 pipeline。
 //! let pipeline = Pipeline::<MockNodeTypesWithDB>::builder()
 //!     .add_stages(OfflineStages::new(exec, Arc::new(consensus), StageConfig::default(), PruneModes::default()))
 //!     .build(provider_factory, static_file_producer);
@@ -57,29 +55,29 @@ use reth_stages_api::Stage;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-/// A set containing all stages to run a fully syncing instance of reth.
+/// 运行一个“完整同步（full sync）”reth 实例所需的 stages 集合。
 ///
-/// A combination of (in order)
+/// 按顺序组合如下集合：
 ///
 /// - [`OnlineStages`]
 /// - [`OfflineStages`]
 /// - [`FinishStage`]
 ///
-/// This expands to the following series of stages:
-/// - [`EraStage`] (optional, for ERA1 import)
+/// 展开后对应如下 stage 序列：
+/// - [`EraStage`]（可选，用于 ERA1 导入）
 /// - [`HeaderStage`]
 /// - [`BodyStage`]
 /// - [`SenderRecoveryStage`]
 /// - [`ExecutionStage`]
-/// - [`PruneSenderRecoveryStage`] (execute)
-/// - [`MerkleStage`] (unwind)
+/// - [`PruneSenderRecoveryStage`]（execute）
+/// - [`MerkleStage`]（unwind）
 /// - [`AccountHashingStage`]
 /// - [`StorageHashingStage`]
-/// - [`MerkleStage`] (execute)
+/// - [`MerkleStage`]（execute）
 /// - [`TransactionLookupStage`]
 /// - [`IndexStorageHistoryStage`]
 /// - [`IndexAccountHistoryStage`]
-/// - [`PruneStage`] (execute)
+/// - [`PruneStage`]（execute）
 /// - [`FinishStage`]
 #[derive(Debug)]
 pub struct DefaultStages<Provider, H, B, E>
@@ -88,15 +86,15 @@ where
     B: BodyDownloader,
     E: ConfigureEvm,
 {
-    /// Configuration for the online stages
+    /// 在线 stages 的配置
     online: OnlineStages<Provider, H, B>,
-    /// Executor factory needs for execution stage
+    /// execution stage 所需的 EVM 配置/执行器工厂
     evm_config: E,
-    /// Consensus instance
+    /// 共识实现实例
     consensus: Arc<dyn FullConsensus<E::Primitives>>,
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
-    /// Prune configuration for every segment that can be pruned
+    /// 各个可裁剪 segment 的裁剪配置
     prune_modes: PruneModes,
 }
 
@@ -106,7 +104,7 @@ where
     B: BodyDownloader,
     E: ConfigureEvm<Primitives: NodePrimitives<BlockHeader = H::Header, Block = B::Block>>,
 {
-    /// Create a new set of default stages with default values.
+    /// 使用给定参数创建默认 stages 集合。
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         provider: Provider,
@@ -142,7 +140,7 @@ where
     H: HeaderDownloader,
     B: BodyDownloader,
 {
-    /// Appends the default offline stages and default finish stage to the given builder.
+    /// 在给定 builder 后追加默认的离线 stages 与默认的 finish stage。
     pub fn add_offline_stages<Provider>(
         default_offline: StageSetBuilder<Provider>,
         evm_config: E,
@@ -180,28 +178,27 @@ where
     }
 }
 
-/// A set containing all stages that require network access by default.
+/// 默认需要网络访问的 stages 集合。
 ///
-/// These stages *can* be run without network access if the specified downloaders are
-/// themselves offline.
+/// 如果指定的 downloader 本身支持离线模式，这些 stages 也可以在无网络的情况下运行。
 #[derive(Debug)]
 pub struct OnlineStages<Provider, H, B>
 where
     H: HeaderDownloader,
     B: BodyDownloader,
 {
-    /// Sync gap provider for the headers stage.
+    /// Header 阶段用于处理同步缺口（sync gap）的 provider。
     provider: Provider,
-    /// The tip for the headers stage.
+    /// Header 阶段的 tip（链头目标）。
     tip: watch::Receiver<B256>,
 
-    /// The block header downloader
+    /// 区块 header 下载器
     header_downloader: H,
-    /// The block body downloader
+    /// 区块 body 下载器
     body_downloader: B,
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
-    /// Optional source of ERA1 files. The `EraStage` does nothing unless this is specified.
+    /// ERA1 文件来源（可选）。未指定时，`EraStage` 不执行任何操作。
     era_import_source: Option<EraImportSource>,
 }
 
@@ -210,7 +207,7 @@ where
     H: HeaderDownloader,
     B: BodyDownloader,
 {
-    /// Create a new set of online stages with default values.
+    /// 创建在线 stages 集合。
     pub const fn new(
         provider: Provider,
         tip: watch::Receiver<B256>,
@@ -229,7 +226,7 @@ where
     H: HeaderDownloader<Header = <B::Block as Block>::Header> + 'static,
     B: BodyDownloader + 'static,
 {
-    /// Create a new builder using the given headers stage.
+    /// 使用给定的 headers stage 创建一个新的 builder。
     pub fn builder_with_headers<Provider>(
         headers: HeaderStage<P, H>,
         body_downloader: B,
@@ -241,7 +238,7 @@ where
         StageSetBuilder::default().add_stage(headers).add_stage(BodyStage::new(body_downloader))
     }
 
-    /// Create a new builder using the given bodies stage.
+    /// 使用给定的 bodies stage 创建一个新的 builder。
     pub fn builder_with_bodies<Provider>(
         bodies: BodyStage<B>,
         provider: P,
@@ -288,9 +285,9 @@ where
     }
 }
 
-/// A set containing all stages that do not require network access.
+/// 不需要网络访问的 stages 集合。
 ///
-/// A combination of (in order)
+/// 按顺序组合如下集合：
 ///
 /// - [`ExecutionStages`]
 /// - [`PruneSenderRecoveryStage`]
@@ -300,18 +297,18 @@ where
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct OfflineStages<E: ConfigureEvm> {
-    /// Executor factory needs for execution stage
+    /// execution stage 所需的 EVM 配置/执行器工厂
     evm_config: E,
-    /// Consensus instance for validating blocks.
+    /// 用于校验区块的共识实现实例。
     consensus: Arc<dyn FullConsensus<E::Primitives>>,
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
-    /// Prune configuration for every segment that can be pruned
+    /// 各个可裁剪 segment 的裁剪配置
     prune_modes: PruneModes,
 }
 
 impl<E: ConfigureEvm> OfflineStages<E> {
-    /// Create a new set of offline stages with default values.
+    /// 创建离线 stages 集合。
     pub const fn new(
         evm_config: E,
         consensus: Arc<dyn FullConsensus<E::Primitives>>,
@@ -334,7 +331,7 @@ where
     fn builder(self) -> StageSetBuilder<Provider> {
         ExecutionStages::new(self.evm_config, self.consensus, self.stages_config.clone())
             .builder()
-            // If sender recovery prune mode is set, add the prune sender recovery stage.
+            // 若设置了 sender recovery 的裁剪模式，则加入 sender recovery 裁剪 stage。
             .add_stage_opt(self.prune_modes.sender_recovery.map(|prune_mode| {
                 PruneSenderRecoveryStage::new(prune_mode, self.stages_config.prune.commit_threshold)
             }))
@@ -343,8 +340,7 @@ where
                 stages_config: self.stages_config.clone(),
                 prune_modes: self.prune_modes.clone(),
             })
-            // Prune stage should be added after all hashing stages, because otherwise it will
-            // delete
+            // Prune stage 应当放在所有 hashing stages 之后，否则可能会提前删除后续 stage 需要的数据。
             .add_stage(PruneStage::new(
                 self.prune_modes.clone(),
                 self.stages_config.prune.commit_threshold,
@@ -352,20 +348,20 @@ where
     }
 }
 
-/// A set containing all stages that are required to execute pre-existing block data.
+/// 执行（execute）已有区块数据所需的 stages 集合。
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ExecutionStages<E: ConfigureEvm> {
-    /// Executor factory that will create executors.
+    /// 用于创建执行器的 EVM 配置/执行器工厂。
     evm_config: E,
-    /// Consensus instance for validating blocks.
+    /// 用于校验区块的共识实现实例。
     consensus: Arc<dyn FullConsensus<E::Primitives>>,
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
-    /// Create a new set of execution stages with default values.
+    /// 创建 execution stages 集合。
     pub const fn new(
         executor_provider: E,
         consensus: Arc<dyn FullConsensus<E::Primitives>>,
@@ -393,17 +389,17 @@ where
     }
 }
 
-/// A set containing all stages that hash account state.
+/// 对账户/存储状态做 hashing 所需的 stages 集合。
 ///
-/// This includes:
-/// - [`MerkleStage`] (unwind)
+/// 包含：
+/// - [`MerkleStage`]（unwind）
 /// - [`AccountHashingStage`]
 /// - [`StorageHashingStage`]
-/// - [`MerkleStage`] (execute)
+/// - [`MerkleStage`]（execute）
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct HashingStages {
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
 }
 
@@ -431,13 +427,13 @@ where
     }
 }
 
-/// A set containing all stages that do additional indexing for historical state.
+/// 为历史状态做额外索引构建的 stages 集合。
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct HistoryIndexingStages {
-    /// Configuration for each stage in the pipeline
+    /// pipeline 中各个 stage 的配置
     stages_config: StageConfig,
-    /// Prune configuration for every segment that can be pruned
+    /// 各个可裁剪 segment 的裁剪配置
     prune_modes: PruneModes,
 }
 

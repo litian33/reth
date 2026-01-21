@@ -1,3 +1,5 @@
+//! Reth CLI 应用程序实现，负责协调命令执行、追踪初始化和节点启动。
+
 use crate::{
     interface::{Commands, NoSubCmd},
     Cli,
@@ -20,7 +22,7 @@ use reth_rpc_server_types::RpcModuleValidator;
 use reth_tracing::{FileWorkerGuard, Layers};
 use std::{fmt, sync::Arc};
 
-/// A wrapper around a parsed CLI that handles command execution.
+/// 一个包裹了解析后的 CLI 的包装器，负责处理命令执行。
 #[derive(Debug)]
 pub struct CliApp<
     Spec: ChainSpecParser,
@@ -28,9 +30,13 @@ pub struct CliApp<
     Rpc: RpcModuleValidator,
     SubCmd: Subcommand + fmt::Debug = NoSubCmd,
 > {
+    /// 解析后的 CLI 参数。
     cli: Cli<Spec, Ext, Rpc, SubCmd>,
+    /// 负责运行异步任务和阻塞命令的运行器。
     runner: Option<CliRunner>,
+    /// 用于配置日志记录和追踪的层。
     layers: Option<Layers>,
+    /// 文件日志记录器的守护进程。
     guard: Option<FileWorkerGuard>,
 }
 
@@ -41,29 +47,28 @@ where
     Rpc: RpcModuleValidator,
     SubCmd: ExtendedCommand + Subcommand + fmt::Debug,
 {
+    /// 创建一个新的 `CliApp` 实例。
     pub(crate) fn new(cli: Cli<C, Ext, Rpc, SubCmd>) -> Self {
         Self { cli, runner: None, layers: Some(Layers::new()), guard: None }
     }
 
-    /// Sets the runner for the CLI commander.
+    /// 为 CLI 设置运行器。
     ///
-    /// This replaces any existing runner with the provided one.
+    /// 这将替换掉任何现有的运行器。
     pub fn set_runner(&mut self, runner: CliRunner) {
         self.runner = Some(runner);
     }
 
-    /// Access to tracing layers.
+    /// 访问追踪层。
     ///
-    /// Returns a mutable reference to the tracing layers, or error
-    /// if tracing initialized and layers have detached already.
+    /// 返回追踪层的可变引用，如果追踪已初始化且层已分离，则返回错误。
     pub fn access_tracing_layers(&mut self) -> Result<&mut Layers> {
         self.layers.as_mut().ok_or_else(|| eyre!("Tracing already initialized"))
     }
 
-    /// Execute the configured cli command.
+    /// 执行配置好的 CLI 命令。
     ///
-    /// This accepts a closure that is used to launch the node via the
-    /// [`NodeCommand`](reth_cli_commands::node::NodeCommand).
+    /// 接收一个闭包，用于通过 [`NodeCommand`](reth_cli_commands::node::NodeCommand) 启动节点。
     pub fn run(self, launcher: impl Launcher<C, Ext>) -> Result<()>
     where
         C: ChainSpecParser<ChainSpec = ChainSpec>,
@@ -71,17 +76,15 @@ where
         let components = |spec: Arc<ChainSpec>| {
             (EthEvmConfig::ethereum(spec.clone()), Arc::new(EthBeaconConsensus::new(spec)))
         };
-
+        // run step 003
         self.run_with_components::<EthereumNode>(components, |builder, ext| async move {
             launcher.entrypoint(builder, ext).await
         })
     }
 
-    /// Execute the configured cli command with the provided [`CliComponentsBuilder`].
+    /// 使用提供的 [`CliComponentsBuilder`] 执行配置好的 CLI 命令。
     ///
-    /// This accepts a closure that is used to launch the node via the
-    /// [`NodeCommand`](reth_cli_commands::node::NodeCommand) and allows providing custom
-    /// components.
+    /// 接收一个闭包，用于通过 [`NodeCommand`](reth_cli_commands::node::NodeCommand) 启动节点，并允许提供自定义组件。
     pub fn run_with_components<N>(
         mut self,
         components: impl CliComponentsBuilder<N>,
@@ -99,7 +102,7 @@ where
             None => CliRunner::try_default_runtime()?,
         };
 
-        // Add network name if available to the logs dir
+        // 如果可用，将网络名称添加到日志目录
         if let Some(chain_spec) = self.cli.command.chain_spec() {
             self.cli.logs.log_file_directory =
                 self.cli.logs.log_file_directory.join(chain_spec.chain().to_string());
@@ -107,15 +110,15 @@ where
 
         self.init_tracing(&runner)?;
 
-        // Install the prometheus recorder to be sure to record all metrics
+        // 安装 prometheus 记录器以确保记录所有指标
         install_prometheus_recorder();
-
+        // run step 004
         run_commands_with::<C, Ext, Rpc, N, SubCmd>(self.cli, runner, components, launcher)
     }
 
-    /// Initializes tracing with the configured options.
+    /// 使用配置的选项初始化追踪。
     ///
-    /// See [`Cli::init_tracing`] for more information.
+    /// 更多信息请参阅 [`Cli::init_tracing`]。
     pub fn init_tracing(&mut self, runner: &CliRunner) -> Result<()> {
         if self.guard.is_none() {
             self.guard = self.cli.init_tracing(runner, self.layers.take().unwrap_or_default())?;
@@ -125,8 +128,8 @@ where
     }
 }
 
-/// Run CLI commands with the provided runner, components and launcher.
-/// This is the shared implementation used by both `CliApp` and Cli methods.
+/// 使用提供的运行器、组件和启动器运行 CLI 命令。
+/// 这是 `CliApp` 和 Cli 方法共同使用的共享实现。
 pub(crate) fn run_commands_with<C, Ext, Rpc, N, SubCmd>(
     cli: Cli<C, Ext, Rpc, SubCmd>,
     runner: CliRunner,
@@ -143,9 +146,10 @@ where
     N: CliNodeTypes<Primitives: NodePrimitives<BlockHeader: HeaderMut>, ChainSpec: Hardforks>,
     SubCmd: ExtendedCommand + Subcommand + fmt::Debug,
 {
+    // run step 005
     match cli.command {
         Commands::Node(command) => {
-            // Validate RPC modules using the configured validator
+            // 使用配置的验证器验证 RPC 模块
             if let Some(http_api) = &command.rpc.http_api {
                 Rpc::validate_selection(http_api, "http.api").map_err(|e| eyre!("{e}"))?;
             }
@@ -154,6 +158,7 @@ where
             }
 
             runner.run_command_until_exit(|ctx| {
+                // run step 006
                 command.execute(ctx, FnLauncher::new::<C, Ext>(launcher))
             })
         }
@@ -182,12 +187,11 @@ where
     }
 }
 
-/// A trait for extension subcommands that can be added to the CLI.
+/// 可以添加到 CLI 的扩展子命令的 trait。
 ///
-/// Consumers implement this trait for their custom subcommands to define
-/// how they should be executed.
+/// 使用者为他们的自定义子命令实现此 trait，以定义它们应该如何执行。
 pub trait ExtendedCommand {
-    /// Execute the extension command with the provided CLI runner.
+    /// 使用提供的 CLI 运行器执行扩展命令。
     fn execute(self, runner: CliRunner) -> Result<()>;
 }
 

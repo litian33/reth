@@ -30,6 +30,7 @@ fn main() {
 
     // 解析 CLI 参数并运行对应子命令；若发生错误则打印并以非 0 退出码退出。
     if let Err(err) =
+        // run step 000
         Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
             // 进入 node 启动闭包：builder 已根据 CLI 参数（chain/rpc/network/datadir 等）配置好。
             info!(target: "reth::cli", "Launching node");
@@ -42,7 +43,7 @@ fn main() {
                     ress_args,
                     node.provider,
                     node.evm_config,
-                    node.network,
+                    node.network,        
                     node.task_executor,
                     node.add_ons_handle.engine_events.new_listener(),
                 )?;

@@ -5,25 +5,24 @@ use crate::{
 };
 use std::{fmt::Debug, sync::Arc};
 
-/// Main Database trait that can open read-only and read-write transactions.
+/// 数据库核心 trait，能够开启只读和读写事务。
 ///
-/// Sealed trait which cannot be implemented by 3rd parties, exposed only for consumption.
+/// 这是一个密封 trait（Sealed trait），不能被外部第三方实现，仅供使用。
 pub trait Database: Send + Sync + Debug {
-    /// Read-Only database transaction
+    /// 只读数据库事务类型
     type TX: DbTx + Send + Sync + Debug + 'static;
-    /// Read-Write database transaction
+    /// 读写数据库事务类型
     type TXMut: DbTxMut + DbTx + TableImporter + Send + Sync + Debug + 'static;
 
-    /// Create read only transaction.
+    /// 创建只读事务。
     #[track_caller]
     fn tx(&self) -> Result<Self::TX, DatabaseError>;
 
-    /// Create read write transaction only possible if database is open with write access.
+    /// 创建读写事务。只有当数据库以写权限打开时才可行。
     #[track_caller]
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError>;
 
-    /// Takes a function and passes a read-only transaction into it, making sure it's closed in the
-    /// end of the execution.
+    /// 接收一个函数并传入只读事务，确保执行结束后事务被关闭。
     fn view<T, F>(&self, f: F) -> Result<T, DatabaseError>
     where
         F: FnOnce(&mut Self::TX) -> T,
@@ -36,8 +35,7 @@ pub trait Database: Send + Sync + Debug {
         Ok(res)
     }
 
-    /// Takes a function and passes a write-read transaction into it, making sure it's committed in
-    /// the end of the execution.
+    /// 接收一个函数并传入读写事务，确保执行结束后事务被提交。
     fn update<T, F>(&self, f: F) -> Result<T, DatabaseError>
     where
         F: FnOnce(&Self::TXMut) -> T,
@@ -76,3 +74,4 @@ impl<DB: Database> Database for &DB {
         <DB as Database>::tx_mut(self)
     }
 }
+

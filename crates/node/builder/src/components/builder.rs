@@ -397,6 +397,7 @@ where
             .await?;
         let consensus = consensus_builder.build_consensus(context).await?;
 
+        // 默认返回组件
         Ok(Components {
             transaction_pool: pool,
             evm_config,

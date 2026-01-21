@@ -1,11 +1,11 @@
-//! Support for configuring the components of a node.
+//! 支持配置节点组件。
 //!
-//! Customizable components of the node include:
-//!  - The transaction pool.
-//!  - The network implementation.
-//!  - The payload builder service.
+//! 节点的可定制组件包括：
+//!  - 交易池（Transaction pool）。
+//!  - 网络实现（Network implementation）。
+//!  - 有效载荷构建服务（Payload builder service）。
 //!
-//! Components depend on a fully type configured node: [FullNodeTypes](crate::node::FullNodeTypes).
+//! 组件依赖于完全类型配置的节点：[FullNodeTypes](crate::node::FullNodeTypes)。
 
 mod builder;
 mod consensus;
@@ -30,57 +30,57 @@ use reth_payload_builder::PayloadBuilderHandle;
 use reth_transaction_pool::{PoolPooledTx, PoolTransaction, TransactionPool};
 use std::fmt::Debug;
 
-/// An abstraction over the components of a node, consisting of:
-///  - evm and executor
-///  - transaction pool
-///  - network
-///  - payload builder.
+/// 节点组件的抽象，包含：
+///  - EVM 和执行器
+///  - 交易池
+///  - 网络
+///  - 有效载荷构建器。
 pub trait NodeComponents<T: FullNodeTypes>: Clone + Debug + Unpin + Send + Sync + 'static {
-    /// The transaction pool of the node.
+    /// 节点的交易池类型。
     type Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<T::Types>>> + Unpin;
 
-    /// The node's EVM configuration, defining settings for the Ethereum Virtual Machine.
+    /// 节点的 EVM 配置，定义以太坊虚拟机的设置。
     type Evm: ConfigureEvm<Primitives = <T::Types as NodeTypes>::Primitives>;
 
-    /// The consensus type of the node.
+    /// 节点的共识类型。
     type Consensus: FullConsensus<<T::Types as NodeTypes>::Primitives> + Clone + Unpin + 'static;
 
-    /// Network API.
+    /// 网络 API。
     type Network: FullNetwork<Primitives: NetPrimitivesFor<<T::Types as NodeTypes>::Primitives>>;
 
-    /// Returns the transaction pool of the node.
+    /// 返回节点的交易池。
     fn pool(&self) -> &Self::Pool;
 
-    /// Returns the node's evm config.
+    /// 返回节点的 EVM 配置。
     fn evm_config(&self) -> &Self::Evm;
 
-    /// Returns the node's consensus type.
+    /// 返回节点的共识类型。
     fn consensus(&self) -> &Self::Consensus;
 
-    /// Returns the handle to the network
+    /// 返回网络句柄。
     fn network(&self) -> &Self::Network;
 
-    /// Returns the handle to the payload builder service handling payload building requests from
-    /// the engine.
+    /// 返回有效载荷构建服务的句柄，负责处理来自引擎的有效载荷构建请求。
     fn payload_builder_handle(&self) -> &PayloadBuilderHandle<<T::Types as NodeTypes>::Payload>;
 }
 
-/// All the components of the node.
+/// 节点的所有组件。
 ///
-/// This provides access to all the components of the node.
+/// 提供对节点所有组件的访问。
 #[derive(Debug)]
 pub struct Components<Node: FullNodeTypes, Network, Pool, EVM, Consensus> {
-    /// The transaction pool of the node.
+    /// 节点的交易池。
     pub transaction_pool: Pool,
-    /// The node's EVM configuration, defining settings for the Ethereum Virtual Machine.
+    /// 节点的 EVM 配置，定义以太坊虚拟机的设置。
     pub evm_config: EVM,
-    /// The consensus implementation of the node.
+    /// 节点的共识实现。
     pub consensus: Consensus,
-    /// The network implementation of the node.
+    /// 节点的网络实现。
     pub network: Network,
-    /// The handle to the payload builder service.
+    /// 有效载荷构建服务的句柄。
     pub payload_builder_handle: PayloadBuilderHandle<<Node::Types as NodeTypes>::Payload>,
 }
+
 
 impl<Node, Pool, EVM, Cons, Network> NodeComponents<Node>
     for Components<Node, Network, Pool, EVM, Cons>

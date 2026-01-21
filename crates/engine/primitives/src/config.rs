@@ -1,17 +1,17 @@
-//! Engine tree configuration.
+//! 引擎树（Engine tree）配置。
 
 use alloy_eips::merge::EPOCH_SLOTS;
 
-/// Triggers persistence when the number of canonical blocks in memory exceeds this threshold.
+/// 当内存中的规范区块数量超过此阈值时触发持久化。
 pub const DEFAULT_PERSISTENCE_THRESHOLD: u64 = 2;
 
-/// How close to the canonical head we persist blocks.
+/// 距离规范链头多少个区块开始持久化。
 pub const DEFAULT_MEMORY_BLOCK_BUFFER_TARGET: u64 = 0;
 
-/// Minimum number of workers we allow configuring explicitly.
+/// 允许显式配置的最小工作线程数量。
 pub const MIN_WORKER_COUNT: usize = 32;
 
-/// Returns the default number of storage worker threads based on available parallelism.
+/// 根据可用并行度返回默认的存储工作线程数量。
 fn default_storage_worker_count() -> usize {
     #[cfg(feature = "std")]
     {
@@ -23,23 +23,23 @@ fn default_storage_worker_count() -> usize {
     }
 }
 
-/// Returns the default number of account worker threads.
+/// 返回默认的账户工作线程数量。
 ///
-/// Account workers coordinate storage proof collection and account trie traversal.
-/// They are set to the same count as storage workers for simplicity.
+/// 账户工作线程协调存储证明收集和账户 trie 遍历。
+/// 为了简单起见，它们被设置为与存储工作线程相同的数量。
 fn default_account_worker_count() -> usize {
     default_storage_worker_count()
 }
 
-/// The size of proof targets chunk to spawn in one multiproof calculation.
+/// 在一次多重证明计算中派生的证明目标分块大小。
 pub const DEFAULT_MULTIPROOF_TASK_CHUNK_SIZE: usize = 60;
 
-/// Default number of reserved CPU cores for non-reth processes.
+/// 为非 reth 进程预留的默认 CPU 核心数量。
 ///
-/// This will be deducted from the thread count of main reth global threadpool.
+/// 这将从 reth 全局线程池的线程计数中扣除。
 pub const DEFAULT_RESERVED_CPU_CORES: usize = 1;
 
-/// Default maximum concurrency for prewarm task.
+/// 预热任务的默认最大并发度。
 pub const DEFAULT_PREWARM_MAX_CONCURRENCY: usize = 16;
 
 const DEFAULT_BLOCK_BUFFER_LIMIT: u32 = EPOCH_SLOTS as u32 * 2;
@@ -47,14 +47,14 @@ const DEFAULT_MAX_INVALID_HEADER_CACHE_LENGTH: u32 = 256;
 const DEFAULT_MAX_EXECUTE_BLOCK_BATCH_SIZE: usize = 4;
 const DEFAULT_CROSS_BLOCK_CACHE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Determines if the host has enough parallelism to run the payload processor.
+/// 确定主机是否有足够的并行度来运行 payload 处理器。
 ///
-/// It requires at least 5 parallel threads:
-/// - Engine in main thread that spawns the state root task.
-/// - Multiproof task in payload processor
-/// - Sparse Trie task in payload processor
-/// - Multiproof computation spawned in payload processor
-/// - Storage root computation spawned in trie parallel proof
+/// 至少需要 5 个并行线程：
+/// - 主线程中的引擎，负责派生状态根任务。
+/// - payload 处理器中的多重证明（Multiproof）任务。
+/// - payload 处理器中的稀疏 Trie（Sparse Trie）任务。
+/// - payload 处理器中派生的多重证明计算。
+/// - 并行 trie 证明中派生的存储根计算。
 pub fn has_enough_parallelism() -> bool {
     #[cfg(feature = "std")]
     {
@@ -64,80 +64,69 @@ pub fn has_enough_parallelism() -> bool {
     false
 }
 
-/// The configuration of the engine tree.
+/// 引擎树的配置结构体。
 #[derive(Debug, Clone)]
 pub struct TreeConfig {
-    /// Maximum number of blocks to be kept only in memory without triggering
-    /// persistence.
+    /// 在不触发持久化的情况下，内存中保留的最大区块高度。
     persistence_threshold: u64,
-    /// How close to the canonical head we persist blocks. Represents the ideal
-    /// number of most recent blocks to keep in memory for quick access and reorgs.
+    /// 距离规范链头多少个区块开始持久化。代表为了快速访问和处理重组（reorg）而保留在内存中的理想最新区块数量。
     ///
-    /// Note: this should be less than or equal to `persistence_threshold`.
+    /// 注意：此值应小于或等于 `persistence_threshold`。
     memory_block_buffer_target: u64,
-    /// Number of pending blocks that cannot be executed due to missing parent and
-    /// are kept in cache.
+    /// 由于缺少父区块而无法执行并保留在缓存中的待处理区块数量。
     block_buffer_limit: u32,
-    /// Number of invalid headers to keep in cache.
+    /// 缓存中保留的无效区块头数量。
     max_invalid_header_cache_length: u32,
-    /// Maximum number of blocks to execute sequentially in a batch.
+    /// 批量顺序执行区块的最大数量。
     ///
-    /// This is used as a cutoff to prevent long-running sequential block execution when we receive
-    /// a batch of downloaded blocks.
+    /// 这用于在接收到一批下载的区块时，防止长时间运行的顺序区块执行。
     max_execute_block_batch_size: usize,
-    /// Whether to use the legacy state root calculation method instead of the
-    /// new state root task.
+    /// 是否使用旧的状态根计算方法，而不是新的状态根任务。
     legacy_state_root: bool,
-    /// Whether to always compare trie updates from the state root task to the trie updates from
-    /// the regular state root calculation.
+    /// 是否始终将状态根任务的 trie 更新与常规状态根计算的 trie 更新进行比较。
     always_compare_trie_updates: bool,
-    /// Whether to disable state cache.
+    /// 是否禁用状态缓存。
     disable_state_cache: bool,
-    /// Whether to disable parallel prewarming.
+    /// 是否禁用并行预热。
     disable_prewarming: bool,
-    /// Whether to disable the parallel sparse trie state root algorithm.
+    /// 是否禁用并行稀疏 Trie 状态根算法。
     disable_parallel_sparse_trie: bool,
-    /// Whether to enable state provider metrics.
+    /// 是否启用状态提供者指标。
     state_provider_metrics: bool,
-    /// Cross-block cache size in bytes.
+    /// 跨区块缓存大小（字节）。
     cross_block_cache_size: u64,
-    /// Whether the host has enough parallelism to run state root task.
+    /// 主机是否有足够的并行度来运行状态根任务。
     has_enough_parallelism: bool,
-    /// Whether multiproof task should chunk proof targets.
+    /// 多重证明任务是否应该对证明目标进行分块。
     multiproof_chunking_enabled: bool,
-    /// Multiproof task chunk size for proof targets.
+    /// 多重证明任务的证明目标分块大小。
     multiproof_chunk_size: usize,
-    /// Number of reserved CPU cores for non-reth processes
+    /// 为非 reth 进程预留的 CPU 核心数量。
     reserved_cpu_cores: usize,
-    /// Whether to disable the precompile cache
+    /// 是否禁用预编译缓存。
     precompile_cache_disabled: bool,
-    /// Whether to use state root fallback for testing
+    /// 是否使用状态根回退（用于测试）。
     state_root_fallback: bool,
-    /// Whether to always process payload attributes and begin a payload build process
-    /// even if `forkchoiceState.headBlockHash` is already the canonical head or an ancestor.
+    /// 即使 `forkchoiceState.headBlockHash` 已经是规范链头或其祖先，是否也始终处理 payload 属性并开始 payload 构建过程。
     ///
-    /// The Engine API specification generally states that client software "MUST NOT begin a
-    /// payload build process if `forkchoiceState.headBlockHash` references a `VALID`
-    /// ancestor of the head of canonical chain".
-    /// See: <https://github.com/ethereum/execution-apis/blob/main/src/engine/paris.md#engine_forkchoiceupdatedv1> (Rule 2)
+    /// Engine API 规范通常规定，如果 `forkchoiceState.headBlockHash` 引用了规范链头的“有效（VALID）”祖先，客户端软件“绝不能（MUST NOT）”开始 payload 构建过程。
+    /// 参见：<https://github.com/ethereum/execution-apis/blob/main/src/engine/paris.md#engine_forkchoiceupdatedv1>（规则 2）
     ///
-    /// This flag allows overriding that behavior.
-    /// This is useful for specific chain configurations (e.g., OP Stack where proposers
-    /// can reorg their own chain), various custom chains, or for development/testing purposes
-    /// where immediate payload regeneration is desired despite the head not changing or moving to
-    /// an ancestor.
+    /// 此标志允许覆盖该行为。这对于特定链配置（例如 OP Stack，其中提议者可以重组自己的链）、各种自定义链，
+    /// 或者在链头未改变或移动到祖先时仍希望立即重新生成 payload 的开发/测试目的非常有用。
     always_process_payload_attributes_on_canonical_head: bool,
-    /// Maximum concurrency for the prewarm task.
+    /// 预热任务的最大并发度。
     prewarm_max_concurrency: usize,
-    /// Whether to unwind canonical header to ancestor during forkchoice updates.
+    /// 在分叉选择更新期间是否允许将规范区块头回滚到祖先。
     allow_unwind_canonical_header: bool,
-    /// Number of storage proof worker threads.
+    /// 存储证明工作线程数量。
     storage_worker_count: usize,
-    /// Number of account proof worker threads.
+    /// 账户证明工作线程数量。
     account_worker_count: usize,
-    /// Whether to enable V2 storage proofs.
+    /// 是否启用 V2 存储证明。
     enable_proof_v2: bool,
 }
+
 
 impl Default for TreeConfig {
     fn default() -> Self {

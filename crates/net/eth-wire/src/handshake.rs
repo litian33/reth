@@ -16,9 +16,9 @@ use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use tracing::{debug, trace};
 
-/// A trait that knows how to perform the P2P handshake.
+/// 负责执行 P2P 握手的 Trait。
 pub trait EthRlpxHandshake: Debug + Send + Sync + 'static {
-    /// Perform the P2P handshake for the `eth` protocol.
+    /// 执行 `eth` 协议的 P2P 握手。
     fn handshake<'a>(
         &'a self,
         unauth: &'a mut dyn UnauthEth,
@@ -28,7 +28,7 @@ pub trait EthRlpxHandshake: Debug + Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<UnifiedStatus, EthStreamError>> + 'a + Send>>;
 }
 
-/// An unauthenticated stream that can send and receive messages.
+/// 一个未经身份验证的、可以发送和接收消息的流。
 pub trait UnauthEth:
     Stream<Item = Result<BytesMut, P2PStreamError>>
     + Sink<Bytes, Error = P2PStreamError>
@@ -47,9 +47,9 @@ impl<T> UnauthEth for T where
 {
 }
 
-/// The Ethereum P2P handshake.
+/// 以太坊 P2P 握手逻辑。
 ///
-/// This performs the regular ethereum `eth` rlpx handshake.
+/// 这执行标准的以太坊 `eth` RLPx 握手。
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct EthHandshake;
@@ -63,6 +63,7 @@ impl EthRlpxHandshake for EthHandshake {
         timeout_limit: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<UnifiedStatus, EthStreamError>> + 'a + Send>> {
         Box::pin(async move {
+            // 对握手过程应用超时限制
             timeout(timeout_limit, EthereumEthHandshake(unauth).eth_handshake(status, fork_filter))
                 .await
                 .map_err(|_| EthStreamError::StreamTimeout)?
@@ -70,7 +71,7 @@ impl EthRlpxHandshake for EthHandshake {
     }
 }
 
-/// A type that performs the ethereum specific `eth` protocol handshake.
+/// 负责执行以太坊特定的 `eth` 协议握手的类型。
 #[derive(Debug)]
 pub struct EthereumEthHandshake<'a, S: ?Sized>(pub &'a mut S);
 
@@ -79,7 +80,7 @@ where
     S: Stream<Item = Result<BytesMut, E>> + CanDisconnect<Bytes> + Send + Unpin,
     EthStreamError: From<E> + From<<S as Sink<Bytes>>::Error>,
 {
-    /// Performs the `eth` rlpx protocol handshake using the given input stream.
+    /// 使用给定的输入流执行 `eth` RLPx 协议握手（交换 Status 消息）。
     pub async fn eth_handshake(
         self,
         unified_status: UnifiedStatus,
@@ -89,14 +90,14 @@ where
 
         let status = unified_status.into_message();
 
-        // Send our status message
+        // 1. 发送我们的 Status 消息
         let status_msg = alloy_rlp::encode(ProtocolMessage::<EthNetworkPrimitives>::from(
             EthMessage::Status(status),
         ))
         .into();
         unauth.send(status_msg).await.map_err(EthStreamError::from)?;
 
-        // Receive peer's response
+        // 2. 接收对等方的响应
         let their_msg_res = unauth.next().await;
         let their_msg = match their_msg_res {
             Some(Ok(msg)) => msg,
@@ -110,6 +111,7 @@ where
             }
         };
 
+        // 3. 校验消息大小
         if their_msg.len() > MAX_MESSAGE_SIZE {
             unauth
                 .disconnect(DisconnectReason::ProtocolBreach)
@@ -118,6 +120,7 @@ where
             return Err(EthStreamError::MessageTooBig(their_msg.len()));
         }
 
+        // 4. 解码对等方的消息
         let version = status.version();
         let msg = match ProtocolMessage::<EthNetworkPrimitives>::decode_message(
             version,
@@ -134,11 +137,12 @@ where
             }
         };
 
-        // Validate peer response
+        // 5. 验证对等方的响应是否为 Status 消息，并核对关键信息
         match msg.message {
             EthMessage::Status(their_status_message) => {
                 trace!("Validating incoming ETH status from peer");
 
+                // 核对 Genesis 哈希
                 if status.genesis() != their_status_message.genesis() {
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
@@ -154,6 +158,7 @@ where
                     .into());
                 }
 
+                // 核对协议版本
                 if status.version() != their_status_message.version() {
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
@@ -166,6 +171,7 @@ where
                     .into());
                 }
 
+                // 核对链 ID
                 if *status.chain() != *their_status_message.chain() {
                     unauth
                         .disconnect(DisconnectReason::ProtocolBreach)
@@ -178,7 +184,7 @@ where
                     .into());
                 }
 
-                // Ensure peer's total difficulty is reasonable
+                // 确保对等方的总难度 (Total Difficulty) 在合理范围内（Legacy 模式）
                 if let StatusMessage::Legacy(s) = their_status_message &&
                     s.total_difficulty.bit_len() > 160
                 {
@@ -193,7 +199,7 @@ where
                     .into());
                 }
 
-                // Fork validation
+                // 分叉验证 (Fork validation)
                 if let Err(err) = fork_filter
                     .validate(their_status_message.forkid())
                     .map_err(EthHandshakeError::InvalidFork)
@@ -205,6 +211,7 @@ where
                     return Err(err.into());
                 }
 
+                // 针对 eth/69 的额外校验
                 if let StatusMessage::Eth69(s) = their_status_message {
                     if s.earliest > s.latest {
                         return Err(EthHandshakeError::EarliestBlockGreaterThanLatestBlock {
@@ -222,6 +229,7 @@ where
                 Ok(UnifiedStatus::from_message(their_status_message))
             }
             _ => {
+                // 如果握手期间收到的不是 Status 消息，视为违反协议
                 unauth
                     .disconnect(DisconnectReason::ProtocolBreach)
                     .await
